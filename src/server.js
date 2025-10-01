@@ -282,70 +282,151 @@ class CloudBackupServer {
         }
     }
 
+    // setupAdvancedRoutes() {
+
+    //     try {
+    //         const authRoutes = require('./routes/auth');
+    //         if (authRoutes) {
+    //             this.app.use('/api/auth', authRoutes);
+    //             logger.info('Auth routes mounted');
+    //         }
+    //     } catch (e) {
+    //         logger.error('Could not load auth routes:', e.message);
+    //     }
+
+    //     try {
+    //         const fileRoutes = require('./routes/files');
+    //         if (fileRoutes) {
+    //             this.app.use('/api/files', fileRoutes);
+    //             this.app.use('/download', fileRoutes);      // Legacy support
+    //             this.app.use('/upload', fileRoutes);        // Android compatibility
+    //             logger.info('File routes mounted at multiple endpoints');
+    //         }
+    //     } catch (e) {
+    //         logger.warn('Could not load file routes:', e.message);
+    //     }
+
+
+    //     try {
+    //         logger.info('Attempting to load auth routes from ./routes/auth');
+    //         const authRoutes = require('./routes/auth');
+    //         if (authRoutes) {
+    //             this.app.use('/api/auth', authRoutes);
+    //             logger.info('Auth routes mounted at /api/auth');
+    //         }
+    //     } catch (e) {
+    //         logger.error('Could not load auth routes:', { message: e.message, stack: e.stack });
+    //     }
+
+    //     // In server.js, add this line in setupAdvancedRoutes():
+    //     try {
+
+    //         // logger.info('Attempting to load auth routes from ./routes/auth');
+
+    //         const fileRoutes = require('./routes/files');
+    //         this.app.use('/upload', fileRoutes);  // Add this line
+    //         this.app.use('/download', require('./routes/files')); // This lets /download?file=... reach files router
+
+
+    //         if (fileRoutes) {
+    //             this.app.use('/upload', fileRoutes);  // Add this line
+
+    //             this.app.use('/api/files', fileRoutes);  // Existing
+    //             this.app.use('/api/upload', fileRoutes); // ADD THIS LINE - alias for upload
+    //             this.app.use('/download', fileRoutes);
+    //             logger.info('File/Upload routes loaded');
+
+    //         }
+    //     } catch (e) { logger.warn('Could not load file routes:', e.message || e); }
+
+    //     try {
+    //         logger.info('Attempting to load auth routes from ./routes/auth');
+    //         const authRoutes = require('./routes/auth');
+    //         if (authRoutes) { this.app.use('/api/auth', authRoutes); logger.info('Auth routes mounted at /api/auth'); }
+    //         else logger.warn('Auth routes module returned empty export');
+    //     } catch (e) {
+    //         logger.error('Could not load auth routes:', { message: e.message, stack: e.stack });
+    //     }
+
+    //     try {
+    //         const fileRoutes = require('./routes/files');
+    //         if (fileRoutes) {
+    //             this.app.use('/api/files', fileRoutes);
+    //             this.app.use('/download', fileRoutes);
+    //             logger.info('File routes loaded at /api/files and /download');
+    //         }
+    //     } catch (e) {
+    //         logger.warn('Could not load file routes:', e.message || e);
+    //     }
+
+    //     try {
+    //         const syncRoutes = require('./routes/sync');
+    //         if (syncRoutes) {
+    //             this.app.use('/api/sync', syncRoutes);
+    //             logger.info('Sync routes loaded');
+    //         }
+    //     } catch (e) {
+    //         logger.warn('Could not load sync routes:', e.message || e);
+    //     }
+
+    //     try {
+    //         const fileRoutes = require('./routes/files');
+    //         if (fileRoutes) {
+    //             this.app.use('/api/files', fileRoutes);
+    //             this.app.use('/download', fileRoutes);      // Legacy support
+    //             this.app.use('/upload', fileRoutes);        // Android compatibility
+    //             logger.info('File routes mounted at multiple endpoints');
+    //         }
+    //     } catch (e) {
+    //         logger.warn('Could not load file routes:', e.message);
+    //     }
+
+    // }
+
     setupAdvancedRoutes() {
-
         try {
-            logger.info('Attempting to load auth routes from ./routes/auth');
-            const authRoutes = require('./routes/auth');
-            if (authRoutes) {
+            logger.info('Setting up advanced routes...');
+
+            // Load auth routes
+            try {
+                logger.info('Loading auth routes...');
+                const authRoutes = require('./routes/auth');
                 this.app.use('/api/auth', authRoutes);
-                logger.info('Auth routes mounted at /api/auth');
+                logger.info('✅ Auth routes loaded successfully at /api/auth');
+            } catch (error) {
+                logger.error('❌ Failed to load auth routes:', {
+                    message: error.message,
+                    stack: error.stack
+                });
             }
-        } catch (e) {
-            logger.error('Could not load auth routes:', { message: e.message, stack: e.stack });
-        }
 
-        // In server.js, add this line in setupAdvancedRoutes():
-        try {
-
-            // logger.info('Attempting to load auth routes from ./routes/auth');
-
-            const fileRoutes = require('./routes/files');
-            this.app.use('/upload', fileRoutes);  // Add this line
-            this.app.use('/download', require('./routes/files')); // This lets /download?file=... reach files router
-
-
-            if (fileRoutes) {
-                this.app.use('/upload', fileRoutes);  // Add this line
-
-                this.app.use('/api/files', fileRoutes);  // Existing
-                this.app.use('/api/upload', fileRoutes); // ADD THIS LINE - alias for upload
-                this.app.use('/download', fileRoutes);
-                logger.info('File/Upload routes loaded');
-
-            }
-        } catch (e) { logger.warn('Could not load file routes:', e.message || e); }
-
-        try {
-            logger.info('Attempting to load auth routes from ./routes/auth');
-            const authRoutes = require('./routes/auth');
-            if (authRoutes) { this.app.use('/api/auth', authRoutes); logger.info('Auth routes mounted at /api/auth'); }
-            else logger.warn('Auth routes module returned empty export');
-        } catch (e) {
-            logger.error('Could not load auth routes:', { message: e.message, stack: e.stack });
-        }
-
-        try {
-            const fileRoutes = require('./routes/files');
-            if (fileRoutes) {
+            // Load file routes
+            try {
+                logger.info('Loading file routes...');
+                const fileRoutes = require('./routes/files');
                 this.app.use('/api/files', fileRoutes);
-                this.app.use('/download', fileRoutes);  
-                logger.info('File routes loaded at /api/files and /download');
+                logger.info('✅ File routes loaded successfully at /api/files');
+            } catch (error) {
+                logger.error('❌ Failed to load file routes:', {
+                    message: error.message,
+                    stack: error.stack
+                });
             }
-        } catch (e) {
-            logger.warn('Could not load file routes:', e.message || e);
-        }
 
-        try {
-            const syncRoutes = require('./routes/sync');
-            if (syncRoutes) {
+            // Load sync routes (these seem to work)
+            try {
+                const syncRoutes = require('./routes/sync');
                 this.app.use('/api/sync', syncRoutes);
-                logger.info('Sync routes loaded');
+                logger.info('✅ Sync routes loaded successfully');
+            } catch (error) {
+                logger.warn('Could not load sync routes:', error.message);
             }
-        } catch (e) {
-            logger.warn('Could not load sync routes:', e.message || e);
-        }
 
+            logger.info('Advanced routes setup completed');
+
+        } catch (error) {
+            logger.error('Failed to setup advanced routes:', error);
+        }
     }
 
     async shutdown(signal) {
