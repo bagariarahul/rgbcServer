@@ -1,4 +1,4 @@
-const { DataTypes } = require('sequelize');
+const { DataTypes, Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
@@ -169,6 +169,10 @@ module.exports = (sequelize) => {
             }
         }
     }, {
+        // FIX: Explicitly enforce snake_case columns to match your indexes
+        timestamps: true,
+        underscored: true,
+        tableName: 'users',
         indexes: [
             {
                 unique: true,
@@ -179,7 +183,7 @@ module.exports = (sequelize) => {
                 fields: ['google_id'],
                 where: {
                     google_id: {
-                        [sequelize.Sequelize.Op.ne]: null
+                        [Op.ne]: null
                     }
                 }
             },
@@ -190,30 +194,24 @@ module.exports = (sequelize) => {
                 fields: ['is_active']
             },
             {
-                fields: ['created_at']
+                fields: ['created_at'] // Now matches the column name!
             }
         ],
         hooks: {
             beforeCreate: async (user) => {
-                // Hash password if provided
                 if (user.password_hash) {
                     const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
                     user.password_hash = await bcrypt.hash(user.password_hash, saltRounds);
                 }
-
-                // Generate email verification token if email not verified
                 if (!user.email_verified && !user.google_id) {
                     user.email_verification_token = crypto.randomBytes(32).toString('hex');
-                    user.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+                    user.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
                 }
-
-                // Set email as verified for Google OAuth users
                 if (user.google_id) {
                     user.email_verified = true;
                 }
             },
             beforeUpdate: async (user) => {
-                // Hash password if changed
                 if (user.changed('password_hash') && user.password_hash) {
                     const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
                     user.password_hash = await bcrypt.hash(user.password_hash, saltRounds);
@@ -224,21 +222,19 @@ module.exports = (sequelize) => {
 
     // Instance methods
     User.prototype.validatePassword = async function(password) {
-        if (!this.password_hash) {
-            throw new Error('User has no password set (OAuth user)');
-        }
+        if (!this.password_hash) return false;
         return await bcrypt.compare(password, this.password_hash);
     };
 
     User.prototype.generateEmailVerificationToken = function() {
         this.email_verification_token = crypto.randomBytes(32).toString('hex');
-        this.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+        this.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000); 
         return this.email_verification_token;
     };
 
     User.prototype.generatePasswordResetToken = function() {
         this.password_reset_token = crypto.randomBytes(32).toString('hex');
-        this.password_reset_expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        this.password_reset_expires = new Date(Date.now() + 60 * 60 * 1000); 
         return this.password_reset_token;
     };
 
@@ -257,12 +253,9 @@ module.exports = (sequelize) => {
 
     User.prototype.incrementLoginAttempts = function() {
         this.login_attempts += 1;
-        
-        // Lock account after 5 failed attempts for 30 minutes
         if (this.login_attempts >= 5) {
             this.locked_until = new Date(Date.now() + 30 * 60 * 1000);
         }
-        
         return this.save();
     };
 
@@ -297,8 +290,6 @@ module.exports = (sequelize) => {
 
     User.prototype.toPublicJSON = function() {
         const user = this.toJSON();
-        
-        // Remove sensitive fields
         delete user.password_hash;
         delete user.google_refresh_token;
         delete user.email_verification_token;
@@ -307,15 +298,11 @@ module.exports = (sequelize) => {
         delete user.backup_codes;
         delete user.login_attempts;
         delete user.locked_until;
-        
         return user;
     };
 
     User.prototype.canAccessFile = function(file) {
-        // Admin can access any file
         if (this.is_admin) return true;
-        
-        // Users can only access their own files
         return file.user_id === this.id;
     };
 
@@ -343,7 +330,7 @@ module.exports = (sequelize) => {
             where: {
                 email_verification_token: token,
                 email_verification_expires: {
-                    [sequelize.Sequelize.Op.gt]: new Date()
+                    [Op.gt]: new Date()
                 }
             }
         });
@@ -354,7 +341,7 @@ module.exports = (sequelize) => {
             where: {
                 password_reset_token: token,
                 password_reset_expires: {
-                    [sequelize.Sequelize.Op.gt]: new Date()
+                    [Op.gt]: new Date()
                 }
             }
         });
@@ -371,7 +358,6 @@ module.exports = (sequelize) => {
             auth_provider: 'GOOGLE',
             email_verified: true
         };
-
         return await this.create(userData);
     };
 
@@ -386,7 +372,6 @@ module.exports = (sequelize) => {
         if (googleProfile.photos?.[0]?.value && !user.avatar_url) {
             user.avatar_url = googleProfile.photos[0].value;
         }
-
         return await user.save();
     };
 

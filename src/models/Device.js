@@ -18,7 +18,7 @@ module.exports = (sequelize) => {
             onDelete: 'CASCADE'
         },
         device_id: {
-            type: DataTypes.UUID,
+            type: DataTypes.STRING(255),
             allowNull: false,
             comment: 'Client-generated device identifier'
         },

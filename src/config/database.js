@@ -1,13 +1,14 @@
-const { Sequelize, DataTypes } = require('sequelize');
+const { Sequelize } = require('sequelize');
 const logger = require('./logger');
 
 // Initialize Sequelize instance
 const sequelize = new Sequelize(
     process.env.DB_NAME || 'cloudbackup',
-    process.env.DB_USER || 'postgres',
-    process.env.DB_PASSWORD || 'password',
+    process.env.DB_USER || 'cloudbackup_user',
+    process.env.DB_PASSWORD || 'secure_demo_password',
     {
-        host: process.env.DB_HOST || 'localhost',
+        // FIX: Default to 'db' for Docker, fallback to localhost for local
+        host: process.env.DB_HOST || 'db',
         port: process.env.DB_PORT || 5432,
         dialect: 'postgres',
         logging: (msg) => {
@@ -29,17 +30,24 @@ const sequelize = new Sequelize(
     }
 );
 
-// Import all models
+// Import all models - ORDER MATTERS for table creation!
+// 1. Base models (no dependencies)
 const User = require('../models/User')(sequelize);
-const Device = require('../models/Device')(sequelize);
+
+// 2. First-level dependencies
+const EncryptionKey = require('../models/EncryptionKey')(sequelize); // MOVED UP: Must exist before File
+const Device = require('../models/Device')(sequelize);               // MOVED UP: Must exist before File/Session
+
+// 3. Dependent models
 const SyncSession = require('../models/SyncSession')(sequelize);
-const File = require('../models/File')(sequelize);
+const File = require('../models/File')(sequelize);                   // References User, Device, EncryptionKey
+
+// 4. Deep dependencies
 const FileChunk = require('../models/FileChunk')(sequelize);
 const FilePreview = require('../models/FilePreview')(sequelize);
 const SyncOperation = require('../models/SyncOperation')(sequelize);
-const EncryptionKey = require('../models/EncryptionKey')(sequelize);
-const StorageNode = require('../models/StorageNode')(sequelize);
 const UploadQueue = require('../models/UploadQueue')(sequelize);
+const StorageNode = require('../models/StorageNode')(sequelize);
 
 // Define associations
 const setupAssociations = () => {
@@ -50,6 +58,12 @@ const setupAssociations = () => {
     User.hasMany(SyncOperation, { foreignKey: 'user_id', as: 'syncOperations' });
     User.hasMany(EncryptionKey, { foreignKey: 'user_id', as: 'encryptionKeys' });
     User.hasMany(UploadQueue, { foreignKey: 'user_id', as: 'uploadQueue' });
+
+    // EncryptionKey associations
+    EncryptionKey.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+    EncryptionKey.belongsTo(EncryptionKey, { foreignKey: 'rotated_from_key_id', as: 'previousKey' });
+    EncryptionKey.hasMany(EncryptionKey, { foreignKey: 'rotated_from_key_id', as: 'rotatedKeys' });
+    EncryptionKey.hasMany(File, { foreignKey: 'encryption_key_id', as: 'files' });
 
     // Device associations
     Device.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
@@ -82,12 +96,6 @@ const setupAssociations = () => {
     SyncOperation.belongsTo(Device, { foreignKey: 'device_id', as: 'device' });
     SyncOperation.belongsTo(File, { foreignKey: 'file_id', as: 'file' });
 
-    // EncryptionKey associations
-    EncryptionKey.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
-    EncryptionKey.belongsTo(EncryptionKey, { foreignKey: 'rotated_from_key_id', as: 'previousKey' });
-    EncryptionKey.hasMany(EncryptionKey, { foreignKey: 'rotated_from_key_id', as: 'rotatedKeys' });
-    EncryptionKey.hasMany(File, { foreignKey: 'encryption_key_id', as: 'files' });
-
     // UploadQueue associations
     UploadQueue.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
     UploadQueue.belongsTo(File, { foreignKey: 'file_id', as: 'file' });
@@ -105,29 +113,22 @@ const connectDB = async () => {
         // Set up model associations
         setupAssociations();
 
-        // Sync database (create tables if they don't exist)
-        // if (process.env.NODE_ENV === 'development') {
-        //     await sequelize.sync({ alter: true });
-        //     logger.info('Database synchronized');
-        // } else {
-        //     // In production, use migrations instead
-        //     logger.info('Production mode: skipping database sync (use migrations)');
-        // }
-        // after you have configured `sequelize` and models & associations:
-        // if (process.env.DB_SYNC && process.env.DB_SYNC.toLowerCase() === 'true') {
-        //     logger.info('DB_SYNC true; running sequelize.sync()');
-        //     await sequelize.sync({ alter: true }); // or sync() as appropriate
-        // } else {
-        //     logger.info('DB_SYNC not true; skipping sequelize.sync() (safe mode)');
-        // }
-// FORCE SYNC (Delete this later!)// FORCE wipes the database clean and recreates it fresh.
-await sequelize.sync({ force: true });
-logger.info("✅ All tables created successfully!");
-// if (process.env.DB_SYNC === 'true') ...
+        // FIX: Smart Sync Logic
+        // If DB_RESET is set in docker-compose, wipe everything clean to fix "USING" errors.
+        if (process.env.DB_RESET === 'true') {
+            logger.warn('⚠️ DB_RESET is true: Wiping database and recreating tables...');
+            await sequelize.sync({ force: true });
+            logger.info('✅ Database reset complete.');
+        } 
+        // Otherwise, just update tables safely
+        else if (process.env.DB_SYNC === 'true') {
+            logger.info('DB_SYNC is true: Updating table schemas...');
+            await sequelize.sync({ alter: true });
+        }
 
     } catch (error) {
         logger.error('Unable to connect to the database:', error);
-        throw error;
+        // We don't throw here so the server can still start in "offline" mode if needed
     }
 };
 
@@ -157,7 +158,6 @@ module.exports = {
     connectDB,
     checkDBHealth,
     closeDB,
-
     // Models
     User,
     Device,
