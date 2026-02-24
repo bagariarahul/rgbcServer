@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+
+  # 1. The Cloudflare Tunnel Service
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: always
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARED_TOKEN}
+    # We define the routing here, bypassing the UI validation
+    command: tunnel --no-autoupdate run --url http://app:3000
+    depends_on:
+      - app
+  # The Backend API
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      # Internal Network Config (Fixes connection issues)
+      - DB_HOST=db
+      - DB_USER=cloudbackup_user
+      - DB_PASSWORD=Bags`20023777
+      - DB_NAME=cloudbackup
+      - REDIS_HOST=redis
+      # Fix path issues by mapping to absolute container paths
+      - UPLOAD_PATH=/app/storage/uploads
+      - TEMP_PATH=/app/storage/temp
+      # Special flag to reset the DB and fix the "USING" error
+      - DB_RESET=true 
+      - DB_SYNC=true
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - app_storage:/app/storage
+
+  # PostgreSQL Database (Isolated)
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=cloudbackup_user
+      - POSTGRES_PASSWORD=Bags`20023777
+      - POSTGRES_DB=cloudbackup
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis Cache
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+  app_storage:
