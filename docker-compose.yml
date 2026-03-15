@@ -12,7 +12,8 @@ services:
     command: tunnel --no-autoupdate run --url http://app:3000
     depends_on:
       - app
-  # The Backend API
+
+  # 2. The Backend API
   app:
     build: .
     ports:
@@ -20,18 +21,29 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3000
-      # Internal Network Config (Fixes connection issues)
+      # Database — all secrets sourced from .env via Docker Compose interpolation
       - DB_HOST=db
-      - DB_USER=cloudbackup_user
-      - DB_PASSWORD=Bags`20023777
-      - DB_NAME=cloudbackup
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      # Redis
       - REDIS_HOST=redis
-      # Fix path issues by mapping to absolute container paths
+      # Storage paths (absolute container paths)
       - UPLOAD_PATH=/app/storage/uploads
       - TEMP_PATH=/app/storage/temp
-      # Special flag to reset the DB and fix the "USING" error
-      - DB_RESET=true 
-      - DB_SYNC=true
+      # Authentication secrets
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
+      - SESSION_SECRET=${SESSION_SECRET}
+      # Google OAuth
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      # ──────────────────────────────────────────────────────────────
+      # DB_RESET and DB_SYNC are intentionally REMOVED.
+      # The app now uses sync({ force: false, alter: false }) which
+      # only creates missing tables and never drops or alters data.
+      # For schema changes, use Sequelize CLI migrations.
+      # ──────────────────────────────────────────────────────────────
     depends_on:
       - db
       - redis
@@ -40,19 +52,19 @@ services:
       - /app/node_modules
       - app_storage:/app/storage
 
-  # PostgreSQL Database (Isolated)
+  # 3. PostgreSQL Database (Isolated)
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=cloudbackup_user
-      - POSTGRES_PASSWORD=Bags`20023777
-      - POSTGRES_DB=cloudbackup
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  # Redis Cache
+  # 4. Redis Cache
   redis:
     image: redis:alpine
     ports:

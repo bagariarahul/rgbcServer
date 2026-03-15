@@ -113,18 +113,18 @@ const connectDB = async () => {
         // Set up model associations
         setupAssociations();
 
-        // FIX: Smart Sync Logic
-        // If DB_RESET is set in docker-compose, wipe everything clean to fix "USING" errors.
-        if (process.env.DB_RESET === 'true') {
-            logger.warn('⚠️ DB_RESET is true: Wiping database and recreating tables...');
-            await sequelize.sync({ force: true });
-            logger.info('✅ Database reset complete.');
-        } 
-        // Otherwise, just update tables safely
-        else if (process.env.DB_SYNC === 'true') {
-            logger.info('DB_SYNC is true: Updating table schemas...');
-            await sequelize.sync({ alter: true });
-        }
+        // ── Safe startup sync ──────────────────────────────────────────
+        // force: false  → never drops tables (preserves all data)
+        // alter: false  → never modifies existing columns
+        //
+        // This will ONLY create tables that don't exist yet.
+        // All schema modifications must be handled via Sequelize CLI
+        // migrations (npx sequelize-cli migration:generate).
+        //
+        // DB_RESET and DB_SYNC flags have been permanently removed.
+        // ────────────────────────────────────────────────────────────────
+        await sequelize.sync({ force: false, alter: false });
+        logger.info('Database tables verified (sync: force=false, alter=false)');
 
     } catch (error) {
         logger.error('Unable to connect to the database:', error);
