@@ -106,29 +106,19 @@ const setupAssociations = () => {
 // Database connection function
 const connectDB = async () => {
     try {
-        // Test the connection
         await sequelize.authenticate();
         logger.info('Database connection established successfully');
 
-        // Set up model associations
         setupAssociations();
 
-        // ── Safe startup sync ──────────────────────────────────────────
-        // force: false  → never drops tables (preserves all data)
-        // alter: false  → never modifies existing columns
-        //
-        // This will ONLY create tables that don't exist yet.
-        // All schema modifications must be handled via Sequelize CLI
-        // migrations (npx sequelize-cli migration:generate).
-        //
-        // DB_RESET and DB_SYNC flags have been permanently removed.
-        // ────────────────────────────────────────────────────────────────
+        // ── Safe startup: only create missing tables, never alter or drop ──
+        // force: false  → never drops tables
+        // alter: false  → never modifies columns (use migrations for schema changes)
         await sequelize.sync({ force: false, alter: false });
-        logger.info('Database tables verified (sync: force=false, alter=false)');
+        logger.info('Database tables verified (sync with force:false, alter:false)');
 
     } catch (error) {
         logger.error('Unable to connect to the database:', error);
-        // We don't throw here so the server can still start in "offline" mode if needed
     }
 };
 

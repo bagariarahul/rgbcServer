@@ -9,7 +9,7 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const fs = require('fs').promises;
 const session = require('express-session');
-const path = require('path'); // FIX: Added path module
+const path = require('path');
 
 // Use try-catch for logger to prevent startup crash if missing
 let logger;
@@ -26,7 +26,6 @@ class CloudBackupServer {
         this.server = null;
         this.PORT = process.env.PORT || 3000;
         this.isShuttingDown = false;
-        // FIX: Define root path for reliable file access
         this.rootPath = path.resolve(__dirname, '..');
     }
 
@@ -98,7 +97,6 @@ class CloudBackupServer {
     }
 
     async createDirectories() {
-        // FIX: Use absolute paths
         const dirs = [
             path.join(this.rootPath, 'storage', 'uploads'),
             path.join(this.rootPath, 'storage', 'temp'),
@@ -116,7 +114,7 @@ class CloudBackupServer {
 
     async initializeAdvancedFeatures() {
         try {
-            // 1. Connect Database (with retry logic handled in database.js)
+            // 1. Connect Database
             const dbModule = require('./config/database');
             await dbModule.connectDB();
 
@@ -140,12 +138,21 @@ class CloudBackupServer {
 
     setupAdvancedRoutes() {
         logger.info('Mounting API Routes...');
+
+        // ── JWT verification middleware (Phase 5) ───────────────────
+        let verifyToken;
+        try {
+            verifyToken = require('./middleware/verifyToken');
+            logger.info('✅ JWT verification middleware loaded');
+        } catch (e) {
+            logger.warn('❌ verifyToken middleware not found, routes will be unprotected');
+            verifyToken = (req, res, next) => next(); // Passthrough fallback
+        }
         
         // Helper to safely load routes
         const loadRoute = (pathStr, requirePath) => {
             try {
                 const routeModule = require(requirePath);
-                // FIX: Check if module is a function (Router) before using
                 if (typeof routeModule === 'function') {
                     this.app.use(pathStr, routeModule);
                     logger.info(`✅ Mounted ${pathStr}`);
@@ -157,11 +164,23 @@ class CloudBackupServer {
             }
         };
 
+        // ── Public routes (no auth required) ────────────────────────
         loadRoute('/api/auth', './routes/auth');
+        loadRoute('/api/auth', './routes/googleAuth');  // Phase 5: Google OAuth
+
+        // ── Protected routes (JWT required) ─────────────────────────
+        // Apply verifyToken BEFORE the route handlers
+        this.app.use('/api/files', verifyToken);
+        this.app.use('/api/sync', verifyToken);
+        this.app.use('/api/server-info', verifyToken);
+
         loadRoute('/api/files', './routes/files');
         loadRoute('/api/sync', './routes/sync');
+        loadRoute('/api/server-info', './routes/serverInfo');
         
-        // Android/Legacy aliases
+        // Android/Legacy aliases (also protected)
+        this.app.use('/upload', verifyToken);
+        this.app.use('/download', verifyToken);
         loadRoute('/upload', './routes/files');
         loadRoute('/download', './routes/files');
     }
