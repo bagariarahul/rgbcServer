@@ -374,7 +374,8 @@ router.get('/list', listValidation, async (req, res) => {
             backupStatus: file.backupStatus,
             isEncrypted: file.isEncrypted,
             uploadedAt: file.uploadedAt,
-            checksum: file.checksum ? file.checksum.substring(0, 16) : null
+            checksum: file.checksum || null
+
         }));
 
         res.json({
@@ -537,6 +538,50 @@ router.get('/', async (req, res) => {
         logger.error('Legacy endpoint error', error);
         res.status(500).json({
             error: 'Request failed',
+            message: 'An internal server error occurred'
+        });
+    }
+});
+
+/**
+ * Check if a file with the given SHA-256 checksum already exists.
+ * Used by the Python sync client to avoid duplicate uploads.
+ * GET /api/files/check-hash/:sha256
+ */
+router.get('/check-hash/:sha256', async (req, res) => {
+    try {
+        const { sha256 } = req.params;
+ 
+        // Validate hash format (64 hex chars)
+        if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) {
+            return res.status(400).json({
+                error: 'Invalid hash',
+                message: 'SHA-256 hash must be 64 hexadecimal characters'
+            });
+        }
+ 
+        // Search the in-memory file storage for a matching checksum
+        for (const [id, record] of fileStorage.entries()) {
+            if (record.checksum && record.checksum.toLowerCase() === sha256.toLowerCase()) {
+                logger.info('Hash match found', { sha256: sha256.substring(0, 16), fileId: id });
+                return res.json({
+                    exists: true,
+                    file: {
+                        id: record.id,
+                        originalName: record.originalName,
+                        fileSize: record.fileSize,
+                        uploadedAt: record.uploadedAt
+                    }
+                });
+            }
+        }
+ 
+        res.json({ exists: false });
+ 
+    } catch (error) {
+        logger.error('Check hash error:', error);
+        res.status(500).json({
+            error: 'Hash check failed',
             message: 'An internal server error occurred'
         });
     }

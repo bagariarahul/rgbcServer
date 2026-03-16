@@ -1,0 +1,28 @@
+# Install: pip install -r requirements.txt
+ 
+# Filesystem watching (real-time file change detection)
+watchdog==4.0.1
+ 
+# HTTP client for API Gateway communication
+requests==2.32.3
+ 
+# Environment variable loading from .env
+python-dotenv==1.0.1
+ 
+# System tray icon (Windows/macOS taskbar presence)
+pystray==0.19.5
+ 
+# Image handling for tray icon (required by pystray)
+Pillow==11.1.0
+ 
+# Sprint 2: Master Node local API server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+ 
+# JWT verification for Android Slave Bearer tokens (optional)
+PyJWT==2.10.1
+ 
+# PyInstaller for .exe compilation (dev only)
+# pyinstaller==6.11.1
+ 

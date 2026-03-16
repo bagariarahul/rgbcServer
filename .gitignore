@@ -38,5 +38,9 @@ Thumbs.db
 tmp/
 temp/
 
-
+rgbc-drive/build/
+rgbc-drive/__pycache__/
+rgbc-drive/dist
+rgbc-drive/RGBCDrive.spec
+rgbc-drive/build.bat
 src\server.txt

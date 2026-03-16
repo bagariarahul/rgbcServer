@@ -68,8 +68,8 @@ module.exports = (sequelize) => {
                 backup_photos: true,
                 backup_videos: true,
                 backup_documents: true,
-                backup_schedule: 'REAL_TIME', // REAL_TIME, DAILY, WEEKLY
-                chunk_size: 5242880, // 5MB
+                backup_schedule: 'REAL_TIME',
+                chunk_size: 5242880,
                 parallel_uploads: 3,
                 compress_uploads: false
             }
@@ -86,6 +86,50 @@ module.exports = (sequelize) => {
         last_sync_at: {
             type: DataTypes.DATE,
             allowNull: true
+        },
+
+        // ═══════════════════════════════════════════════════════════
+        // SPRINT 2: P2P Master-Slave signaling columns
+        // ═══════════════════════════════════════════════════════════
+
+        role: {
+            type: DataTypes.STRING(10),
+            defaultValue: 'SLAVE',
+            allowNull: false,
+            validate: {
+                isIn: [['MASTER', 'SLAVE']]
+            },
+            comment: 'MASTER stores files and runs local API; SLAVE pushes/pulls to Master'
+        },
+        tunnel_url: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            comment: 'Cloudflare Tunnel URL for Master nodes (e.g., https://master-abc.bagariaa.in)'
+        },
+        local_ip: {
+            type: DataTypes.STRING(45),
+            allowNull: true,
+            comment: 'LAN IPv4/IPv6 for same-network direct connect optimization'
+        },
+        local_port: {
+            type: DataTypes.INTEGER,
+            defaultValue: 8741,
+            comment: 'FastAPI port on Master node'
+        },
+        file_count: {
+            type: DataTypes.INTEGER,
+            defaultValue: 0,
+            comment: 'Number of files tracked by this device'
+        },
+        disk_free_bytes: {
+            type: DataTypes.BIGINT,
+            defaultValue: 0,
+            comment: 'Free disk space reported via heartbeat'
+        },
+        os_platform: {
+            type: DataTypes.STRING(20),
+            allowNull: true,
+            comment: 'win32, darwin, linux, android, ios'
         }
     }, {
         indexes: [
@@ -104,20 +148,31 @@ module.exports = (sequelize) => {
             },
             {
                 fields: ['last_seen_at']
+            },
+            // Sprint 2: index for fast Master lookup
+            {
+                fields: ['role']
+            },
+            {
+                fields: ['role', 'is_active', 'last_seen_at']
             }
         ]
     });
 
-    // Instance methods
+    // ── Instance methods ────────────────────────────────────────────
+
     Device.prototype.updateLastSeen = function() {
         this.last_seen_at = new Date();
         return this.save();
     };
 
     Device.prototype.isOnline = function() {
-        // Consider device online if seen within last 5 minutes
         const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
         return this.last_seen_at > fiveMinutesAgo;
+    };
+
+    Device.prototype.isMaster = function() {
+        return this.role === 'MASTER';
     };
 
     Device.prototype.updateSyncSettings = function(settings) {
@@ -148,34 +203,43 @@ module.exports = (sequelize) => {
 
     Device.prototype.shouldBackupFile = function(filePath, mimeType) {
         const settings = this.sync_settings;
-        
-        // Check if auto backup is enabled
         if (!settings.auto_backup) return false;
-        
-        // Check file type preferences
         if (mimeType.startsWith('image/') && !settings.backup_photos) return false;
         if (mimeType.startsWith('video/') && !settings.backup_videos) return false;
         if (mimeType.startsWith('application/') && !settings.backup_documents) return false;
         if (mimeType.startsWith('text/') && !settings.backup_documents) return false;
-        
-        // Check if file is in backup directories
         const directories = this.backup_directories || [];
-        if (directories.length === 0) return true; // Backup everything if no specific dirs
-        
+        if (directories.length === 0) return true;
         return directories.some(dir => filePath.startsWith(dir));
     };
 
     Device.prototype.toPublicJSON = function() {
         const device = this.toJSON();
-        
-        // Remove sensitive fields
         delete device.device_fingerprint;
         delete device.push_token;
-        
         return device;
     };
 
-    // Static methods
+    // Sprint 2: Safe public representation for Slave discovery
+    Device.prototype.toMasterInfoJSON = function() {
+        return {
+            device_id: this.device_id,
+            device_name: this.device_name,
+            device_type: this.device_type,
+            role: this.role,
+            tunnel_url: this.tunnel_url,
+            local_ip: this.local_ip,
+            local_port: this.local_port,
+            file_count: this.file_count,
+            disk_free_bytes: this.disk_free_bytes,
+            os_platform: this.os_platform,
+            last_seen_at: this.last_seen_at,
+            is_online: this.isOnline()
+        };
+    };
+
+    // ── Static methods ──────────────────────────────────────────────
+
     Device.findByUserAndDeviceId = function(userId, deviceId) {
         return this.findOne({
             where: {
@@ -205,6 +269,34 @@ module.exports = (sequelize) => {
                 last_seen_at: {
                     [sequelize.Sequelize.Op.gt]: fiveMinutesAgo
                 }
+            },
+            order: [['last_seen_at', 'DESC']]
+        });
+    };
+
+    // Sprint 2: Find the online Master for a given user
+    Device.findOnlineMaster = function(userId) {
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        return this.findOne({
+            where: {
+                user_id: userId,
+                role: 'MASTER',
+                is_active: true,
+                last_seen_at: {
+                    [sequelize.Sequelize.Op.gt]: fiveMinutesAgo
+                }
+            },
+            order: [['last_seen_at', 'DESC']]
+        });
+    };
+
+    // Sprint 2: Find ANY registered Master (online or not)
+    Device.findMaster = function(userId) {
+        return this.findOne({
+            where: {
+                user_id: userId,
+                role: 'MASTER',
+                is_active: true
             },
             order: [['last_seen_at', 'DESC']]
         });

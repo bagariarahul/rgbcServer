@@ -8,7 +8,6 @@ services:
     restart: always
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARED_TOKEN}
-    # We define the routing here, bypassing the UI validation
     command: tunnel --no-autoupdate run --url http://app:3000
     depends_on:
       - app
@@ -21,7 +20,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3000
-      # Database — all secrets sourced from .env via Docker Compose interpolation
+      # Database
       - DB_HOST=db
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
@@ -38,12 +37,10 @@ services:
       # Google OAuth
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      # ──────────────────────────────────────────────────────────────
-      # DB_RESET and DB_SYNC are intentionally REMOVED.
-      # The app now uses sync({ force: false, alter: false }) which
-      # only creates missing tables and never drops or alters data.
-      # For schema changes, use Sequelize CLI migrations.
-      # ──────────────────────────────────────────────────────────────
+      # Admin email gate
+      - ALLOWED_ADMIN_EMAIL=${ALLOWED_ADMIN_EMAIL}
+      # Phase 6: M2M API Key for headless clients (Python Tally Sync)
+      - M2M_API_KEY=${M2M_API_KEY}
     depends_on:
       - db
       - redis

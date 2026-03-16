@@ -23,6 +23,7 @@ try {
 class CloudBackupServer {
     constructor() {
         this.app = express();
+        this.app.set('trust proxy', 1);
         this.server = null;
         this.PORT = process.env.PORT || 3000;
         this.isShuttingDown = false;
@@ -75,7 +76,7 @@ class CloudBackupServer {
             secret: process.env.SESSION_SECRET || 'dev_secret',
             resave: false,
             saveUninitialized: false,
-            cookie: { secure: false } // Set to true if using HTTPS
+            cookie: { secure: false }
         }));
 
         // Request logging
@@ -139,14 +140,14 @@ class CloudBackupServer {
     setupAdvancedRoutes() {
         logger.info('Mounting API Routes...');
 
-        // ── JWT verification middleware (Phase 5) ───────────────────
+        // ── JWT / M2M API Key verification middleware ────────────────
         let verifyToken;
         try {
             verifyToken = require('./middleware/verifyToken');
             logger.info('✅ JWT verification middleware loaded');
         } catch (e) {
             logger.warn('❌ verifyToken middleware not found, routes will be unprotected');
-            verifyToken = (req, res, next) => next(); // Passthrough fallback
+            verifyToken = (req, res, next) => next();
         }
         
         // Helper to safely load routes
@@ -166,18 +167,19 @@ class CloudBackupServer {
 
         // ── Public routes (no auth required) ────────────────────────
         loadRoute('/api/auth', './routes/auth');
-        loadRoute('/api/auth', './routes/googleAuth');  // Phase 5: Google OAuth
+        loadRoute('/api/auth', './routes/googleAuth');
 
-        // ── Protected routes (JWT required) ─────────────────────────
-        // Apply verifyToken BEFORE the route handlers
+        // ── Protected routes (JWT or M2M API Key required) ──────────
         this.app.use('/api/files', verifyToken);
         this.app.use('/api/sync', verifyToken);
         this.app.use('/api/server-info', verifyToken);
+        this.app.use('/api/devices', verifyToken);     // Sprint 2: P2P signaling
 
         loadRoute('/api/files', './routes/files');
         loadRoute('/api/sync', './routes/sync');
         loadRoute('/api/server-info', './routes/serverInfo');
-        
+        loadRoute('/api/devices', './routes/devices');  // Sprint 2: P2P signaling
+
         // Android/Legacy aliases (also protected)
         this.app.use('/upload', verifyToken);
         this.app.use('/download', verifyToken);
