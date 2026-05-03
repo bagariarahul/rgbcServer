@@ -1,85 +1,70 @@
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const logger = require('../config/logger');
 
 /**
- * Unified authentication middleware.
+ * Sprint 3 — RS256 JWT Verification Middleware
  *
- * Supports two authentication methods:
+ * BREAKING CHANGES from Sprint 2:
+ *   1. HS256 → RS256: Tokens are now verified with the RSA public key,
+ *      not the symmetric JWT_SECRET. The public key can be freely
+ *      distributed — compromise does NOT enable token forging.
+ *   2. M2M_API_KEY REMOVED: The Python Master now authenticates via
+ *      Google OAuth and receives its own JWT. The X-API-Key header
+ *      path is eliminated entirely.
  *
- * 1. JWT Bearer Token (Android app / browser):
- *    Authorization: Bearer <jwt_token>
- *
- * 2. M2M API Key (headless Python/Windows client):
- *    X-API-Key: <api_key>
- *
- * The M2M API key is a long-lived secret stored in the backend .env
- * as M2M_API_KEY. Generate one with: openssl rand -hex 32
+ * Key file expected: src/keys/public.pem
  */
+
+const KEYS_DIR = path.resolve(__dirname, '..', 'keys');
+
+let PUBLIC_KEY = null;
+try {
+    PUBLIC_KEY = fs.readFileSync(path.join(KEYS_DIR, 'public.pem'), 'utf8');
+    logger.info('✅ RS256 public key loaded from src/keys/public.pem');
+} catch (e) {
+    logger.error(
+        '❌ RS256 public key not found at src/keys/public.pem\n' +
+        '   Generate it with:\n' +
+        '     cd src/keys && openssl genrsa -out private.pem 2048\n' +
+        '     openssl rsa -in private.pem -pubout -out public.pem\n'
+    );
+}
+
 const verifyToken = (req, res, next) => {
     try {
-        // ── Path 1: Check for M2M API Key header first ──────────────
-        const apiKey = req.headers['x-api-key'];
-        if (apiKey) {
-            const validApiKey = process.env.M2M_API_KEY;
-
-            if (!validApiKey) {
-                logger.warn('M2M_API_KEY not configured in .env — rejecting API key auth');
-                return res.status(500).json({
-                    error: 'Server configuration error',
-                    message: 'API key authentication is not configured',
-                    code: 'M2M_NOT_CONFIGURED'
-                });
-            }
-
-            // Constant-time comparison to prevent timing attacks
-            try {
-                const keyBuffer = Buffer.from(apiKey, 'utf-8');
-                const validBuffer = Buffer.from(validApiKey, 'utf-8');
-
-                if (keyBuffer.length === validBuffer.length &&
-                    crypto.timingSafeEqual(keyBuffer, validBuffer)
-                ) {
-                    req.user = {
-                        id: 'M2M_CLIENT',
-                        email: process.env.ALLOWED_ADMIN_EMAIL || 'admin@system',
-                        sessionId: 'M2M_SESSION',
-                        authMethod: 'API_KEY'
-                    };
-                    logger.debug('M2M API key authentication successful');
-                    return next();
-                }
-            } catch (e) {
-                // timingSafeEqual throws if lengths differ — that's a mismatch
-            }
-
-            logger.warn('Invalid M2M API key presented');
-            return res.status(401).json({
-                error: 'Invalid API key',
-                message: 'The provided API key is not valid',
-                code: 'INVALID_API_KEY'
-            });
-        }
-
-        // ── Path 2: Check for JWT Bearer token ──────────────────────
         const authHeader = req.headers.authorization;
 
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({
                 error: 'Authentication required',
-                message: 'Provide a Bearer token or X-API-Key header',
+                message: 'Missing or invalid Authorization header. Provide: Authorization: Bearer <jwt>',
                 code: 'AUTH_TOKEN_MISSING'
             });
         }
 
-        const token = authHeader.substring(7);
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (!PUBLIC_KEY) {
+            logger.error('RS256 public key not loaded — cannot verify tokens');
+            return res.status(500).json({
+                error: 'Server configuration error',
+                message: 'RS256 public key not found on server',
+                code: 'KEY_MISSING'
+            });
+        }
 
+        const token = authHeader.substring(7);
+
+        // Verify JWT with RSA public key (RS256)
+        const decoded = jwt.verify(token, PUBLIC_KEY, {
+            algorithms: ['RS256']
+        });
+
+        // Attach decoded user info to request
         req.user = {
             id: decoded.userId,
             email: decoded.email,
-            sessionId: decoded.sessionId,
-            authMethod: 'JWT'
+            sessionId: decoded.sessionId
         };
 
         next();
@@ -94,9 +79,10 @@ const verifyToken = (req, res, next) => {
         }
 
         if (error.name === 'JsonWebTokenError') {
+            logger.warn(`Invalid token: ${error.message}`);
             return res.status(401).json({
                 error: 'Invalid token',
-                message: 'Token verification failed',
+                message: 'Token verification failed. Ensure you are using a current RS256 token.',
                 code: 'INVALID_TOKEN'
             });
         }

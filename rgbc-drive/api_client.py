@@ -1,8 +1,20 @@
 """
-RGBC Drive — Server API Client
+RGBC Drive — Server API Client (Sprint 3)
 
 Handles all HTTP communication with the RGBC backend.
-Authenticates via X-API-Key header (M2M API Key).
+
+Sprint 3 BREAKING CHANGES:
+  1. M2M API Key (X-API-Key) REMOVED
+  2. Authentication via MasterOAuth: a requests.auth.AuthBase adapter
+     calls oauth_manager.get_auth_headers() on EVERY request, so the
+     Bearer JWT is always fresh — even if the token was refreshed
+     mid-session by the OAuth cache expiry logic.
+  3. Backward-compatible: if no oauth_manager is provided, falls back
+     to a static api_key (for testing/migration only).
+
+The AuthBase adapter means ALL calls through self.session — including
+direct api.session.post() in rgbc_drive.py — automatically get the
+correct Authorization header. No call site changes needed.
 
 Endpoints used:
   GET  /health                        — connectivity test
@@ -19,9 +31,50 @@ from typing import Optional
 from dataclasses import dataclass
 
 import requests
+from requests.auth import AuthBase
 
 logger = logging.getLogger("RGBCDrive.API")
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# DYNAMIC BEARER TOKEN AUTH ADAPTER
+#
+# Injected into requests.Session.auth so EVERY request — whether via
+# self.session.get(), self.session.post(), or the high-level methods —
+# gets the current Bearer JWT from the MasterOAuth manager.
+#
+# If the cached JWT expired and MasterOAuth refreshed it between calls,
+# the next request automatically picks up the new token.
+# ═══════════════════════════════════════════════════════════════════════
+
+class _OAuthBearerAuth(AuthBase):
+    """requests AuthBase adapter that reads the JWT dynamically."""
+
+    def __init__(self, oauth_manager):
+        self._oauth = oauth_manager
+
+    def __call__(self, r: requests.PreparedRequest) -> requests.PreparedRequest:
+        headers = self._oauth.get_auth_headers()
+        for key, value in headers.items():
+            r.headers[key] = value
+        return r
+
+
+class _StaticKeyAuth(AuthBase):
+    """Legacy fallback: static X-API-Key header (Sprint 2 compat)."""
+
+    def __init__(self, api_key: str):
+        self._key = api_key
+
+    def __call__(self, r: requests.PreparedRequest) -> requests.PreparedRequest:
+        if self._key:
+            r.headers["X-API-Key"] = self._key
+        return r
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DATA CLASSES
+# ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class UploadResult:
@@ -41,25 +94,48 @@ class RemoteFile:
     uploaded_at: Optional[str]
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# API CLIENT
+# ═══════════════════════════════════════════════════════════════════════
+
 class APIClient:
     """
     Thread-safe HTTP client for the RGBC backend.
 
-    The requests.Session is thread-safe per the requests docs:
-    "Session objects can safely be used from multiple threads."
+    Sprint 3 usage (recommended):
+        from master_oauth import MasterOAuth
+        oauth = MasterOAuth(gateway_url=SERVER_URL, ...)
+        api = APIClient(server_url=SERVER_URL, oauth_manager=oauth)
+
+    Legacy usage (Sprint 2 backward-compat, NOT recommended):
+        api = APIClient(server_url=SERVER_URL, api_key="...")
     """
 
-    def __init__(self, server_url: str, api_key: str):
+    def __init__(
+        self,
+        server_url: str,
+        api_key: str = "",
+        oauth_manager=None,
+    ):
         self.server_url = server_url.rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({
-            "X-API-Key": api_key,
             "Accept": "application/json",
         })
+
+        # ── Attach auth adapter ──────────────────────────────────
+        if oauth_manager is not None:
+            self.session.auth = _OAuthBearerAuth(oauth_manager)
+            logger.info("🔐 API client using OAuth Bearer JWT (RS256)")
+        elif api_key:
+            self.session.auth = _StaticKeyAuth(api_key)
+            logger.warning("🔐 API client using static API key (DEPRECATED)")
+        else:
+            logger.warning("🔐 API client has NO authentication configured")
+
         # Timeouts: (connect, read)
-        # Upload/download use longer read timeouts
         self._fast_timeout = (10, 30)
-        self._transfer_timeout = (30, 600)  # 10min read for large files
+        self._transfer_timeout = (30, 600)
 
     # ═══════════════════════════════════════════════════════════════════
     # HEALTH CHECK
@@ -186,7 +262,6 @@ class APIClient:
                         uploaded_at=f.get("uploadedAt"),
                     ))
 
-                # Check if there are more pages
                 total = pagination.get("total", 0)
                 current_offset += limit
                 if current_offset >= total or not files:
@@ -210,7 +285,6 @@ class APIClient:
         Returns True on success.
         """
         try:
-            # Ensure parent directory exists
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
             logger.info(f"Downloading: server ID {server_file_id} → {dest_path}")
@@ -225,7 +299,6 @@ class APIClient:
                 logger.error(f"❌ Download failed: HTTP {resp.status_code}")
                 return False
 
-            # Stream to disk in chunks
             total_bytes = 0
             with open(dest_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
@@ -249,7 +322,6 @@ class APIClient:
             return False
         except Exception as e:
             logger.error(f"❌ Download error: {e}")
-            # Clean up partial file
             try:
                 if os.path.exists(dest_path):
                     os.unlink(dest_path)

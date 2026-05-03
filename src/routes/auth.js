@@ -175,59 +175,14 @@ router.post('/login', loginValidation, async (req, res) => {
     }
 });
 
-// POST /api/auth/google
-router.post('/google', async (req, res) => {
-    const { idToken, deviceId, deviceName, deviceType } = req.body;
-
-    if (!idToken) return res.status(400).json({ message: 'No Google ID token provided' });
-
-    try {
-        // 1. Verify token with Google's servers
-        const ticket = await googleClient.verifyIdToken({
-            idToken,
-            audience: process.env.GOOGLE_CLIENT_ID,
-        });
-        const payload = ticket.getPayload();
-        const email = payload.email;
-
-        // 2. DevSecOps Check: Is this the Allowed Admin?
-        if (email !== process.env.ALLOWED_ADMIN_EMAIL) {
-            logger.warn(`🚨 Unauthorized Google login attempt blocked from: ${email}`);
-            return res.status(403).json({ message: 'Unauthorized email address.' });
-        }
-
-        // 3. Find the user (or create the Admin user if this is the first run)
-        let user = await User.findByEmail(email);
-        if (!user) {
-            user = await User.create({
-                email,
-                password_hash: crypto.randomBytes(16).toString('hex'), // Dummy password for OAuth users
-                first_name: payload.given_name || 'Admin',
-                last_name: payload.family_name || '',
-                auth_provider: 'GOOGLE'
-            });
-            logger.info(`Admin user created via Google Auth: ${email}`);
-        }
-
-        // 4. Generate standard session/tokens using your existing robust function
-        const { tokens } = await createSession(
-            user,
-            deviceId || 'unknown',
-            deviceName || 'Google Auth Device',
-            deviceType || 'ANDROID'
-        );
-
-        logger.info(`Admin logged in via Google: ${email}`);
-        res.json({
-            message: 'Google Login successful',
-            user: user.toPublicJSON(),
-            tokens // This returns accessToken and refreshToken matching your Android app's expectations
-        });
-
-    } catch (error) {
-        logger.error('Google Auth Error:', error);
-        res.status(401).json({ message: 'Invalid Google token' });
-    }
+// POST /api/auth/google — REMOVED in Sprint 3
+// Android now calls /api/auth/google-signin (RS256)
+// Return 410 Gone so any stale client gets a clear error
+router.post('/google', (req, res) => {
+    res.status(410).json({
+        error: 'Endpoint deprecated',
+        message: 'Use POST /api/auth/google-signin instead. Update your app.'
+    });
 });
 
 module.exports = router;

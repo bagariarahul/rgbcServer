@@ -5,13 +5,18 @@ const logger = require('../config/logger');
 const { Device, User } = require('../config/database');
 
 // ═══════════════════════════════════════════════════════════════════════
-// POST /api/devices/register
+// Sprint 3 — Identity-Bound Device Registry
 //
-// Called by Master and Slave nodes on startup.
-// Upserts the device record and assigns/updates the role.
-//
-// Auth: verifyToken middleware (JWT or M2M API key)
+// BREAKING CHANGES:
+//   1. M2M_CLIENT resolution REMOVED — all requests now have a real
+//      userId from JWT (Master authenticates via Google OAuth).
+//   2. GET /master now enforces EMAIL MATCHING: a Slave can only
+//      discover a Master registered by the same Google account.
+//   3. POST /register now stores the registering user's email on the
+//      device record for cross-reference.
 // ═══════════════════════════════════════════════════════════════════════
+
+// ── POST /api/devices/register ──────────────────────────────────────
 
 const registerValidation = [
     body('device_id').trim().notEmpty().isLength({ max: 255 }),
@@ -32,106 +37,63 @@ router.post('/register', registerValidation, async (req, res) => {
 
     try {
         const {
-            device_id,
-            device_name,
-            device_type,
-            role,
-            tunnel_url,
-            local_ip,
-            local_port,
-            os_platform,
-            os_version,
-            app_version,
-            file_count,
-            disk_free_bytes,
+            device_id, device_name, device_type, role,
+            tunnel_url, local_ip, local_port, os_platform,
+            os_version, app_version, file_count, disk_free_bytes,
         } = req.body;
 
-        // req.user is set by verifyToken middleware
-        // For M2M (API key), user.id is 'M2M_CLIENT' — we need a real user_id.
-        // Find the admin user by the ALLOWED_ADMIN_EMAIL.
-        let userId = req.user.id;
-        if (userId === 'M2M_CLIENT') {
-            const adminEmail = process.env.ALLOWED_ADMIN_EMAIL;
-            if (!adminEmail) {
-                return res.status(500).json({
-                    error: 'ALLOWED_ADMIN_EMAIL not configured on server'
-                });
-            }
-            const adminUser = await User.findOne({ where: { email: adminEmail } });
-            if (!adminUser) {
-                return res.status(404).json({
-                    error: 'Admin user not found. Log in via Google OAuth first to create the user record.'
-                });
-            }
-            userId = adminUser.id;
+        // Sprint 3: req.user is ALWAYS a real user (no more M2M_CLIENT)
+        const userId = req.user.id;
+        const userEmail = req.user.email;
+
+        if (!userId || !userEmail) {
+            return res.status(401).json({
+                error: 'Invalid token',
+                message: 'JWT must contain userId and email claims.'
+            });
         }
 
-        // ── Enforce single-Master rule ──────────────────────────────
-        // Only one device per user can be MASTER at a time.
+        // Enforce single-Master rule
         if (role === 'MASTER') {
             const existingMaster = await Device.findOne({
-                where: {
-                    user_id: userId,
-                    role: 'MASTER',
-                    is_active: true
-                }
+                where: { user_id: userId, role: 'MASTER', is_active: true }
             });
-
-            // If a different device is already Master, demote it
             if (existingMaster && existingMaster.device_id !== device_id) {
                 logger.info(`Demoting existing Master: ${existingMaster.device_name} → SLAVE`);
-                await existingMaster.update({
-                    role: 'SLAVE',
-                    tunnel_url: null
-                });
+                await existingMaster.update({ role: 'SLAVE', tunnel_url: null });
             }
         }
 
-        // ── Upsert device record ────────────────────────────────────
+        // Upsert device record
         let device = await Device.findOne({
             where: { user_id: userId, device_id: device_id }
         });
 
         const now = new Date();
+        const deviceData = {
+            device_name, device_type, role,
+            tunnel_url: role === 'MASTER' ? (tunnel_url || null) : null,
+            local_ip: local_ip || null,
+            local_port: local_port || 8741,
+            os_platform: os_platform || null,
+            os_version: os_version || null,
+            app_version: app_version || null,
+            file_count: file_count || 0,
+            disk_free_bytes: disk_free_bytes || 0,
+            is_active: true,
+            last_seen_at: now,
+        };
 
         if (device) {
-            // Update existing device
-            await device.update({
-                device_name,
-                device_type,
-                role,
-                tunnel_url: role === 'MASTER' ? (tunnel_url || null) : null,
-                local_ip: local_ip || null,
-                local_port: local_port || 8741,
-                os_platform: os_platform || null,
-                os_version: os_version || device.os_version,
-                app_version: app_version || device.app_version,
-                file_count: file_count || device.file_count || 0,
-                disk_free_bytes: disk_free_bytes || device.disk_free_bytes || 0,
-                is_active: true,
-                last_seen_at: now,
-            });
-            logger.info(`Device updated: ${device_name} (${role})`);
+            await device.update(deviceData);
+            logger.info(`Device updated: ${device_name} (${role}) by ${userEmail}`);
         } else {
-            // Create new device
             device = await Device.create({
                 user_id: userId,
                 device_id,
-                device_name,
-                device_type,
-                role,
-                tunnel_url: role === 'MASTER' ? (tunnel_url || null) : null,
-                local_ip: local_ip || null,
-                local_port: local_port || 8741,
-                os_platform: os_platform || null,
-                os_version: os_version || null,
-                app_version: app_version || null,
-                file_count: file_count || 0,
-                disk_free_bytes: disk_free_bytes || 0,
-                is_active: true,
-                last_seen_at: now,
+                ...deviceData,
             });
-            logger.info(`Device registered: ${device_name} (${role})`);
+            logger.info(`Device registered: ${device_name} (${role}) by ${userEmail}`);
         }
 
         res.json({
@@ -146,14 +108,7 @@ router.post('/register', registerValidation, async (req, res) => {
 });
 
 
-// ═══════════════════════════════════════════════════════════════════════
-// POST /api/devices/heartbeat
-//
-// Called by the Master Node every 30 seconds to report liveness.
-// Updates last_seen_at, tunnel_url, file_count, disk_free_bytes.
-//
-// Auth: verifyToken middleware
-// ═══════════════════════════════════════════════════════════════════════
+// ── POST /api/devices/heartbeat ─────────────────────────────────────
 
 const heartbeatValidation = [
     body('device_id').trim().notEmpty(),
@@ -171,19 +126,7 @@ router.post('/heartbeat', heartbeatValidation, async (req, res) => {
 
     try {
         const { device_id, tunnel_url, file_count, disk_free_bytes, local_ip } = req.body;
-
-        // Resolve user ID (same M2M logic as register)
-        let userId = req.user.id;
-        if (userId === 'M2M_CLIENT') {
-            const adminEmail = process.env.ALLOWED_ADMIN_EMAIL;
-            const adminUser = adminEmail
-                ? await User.findOne({ where: { email: adminEmail } })
-                : null;
-            if (!adminUser) {
-                return res.status(404).json({ error: 'Admin user not found' });
-            }
-            userId = adminUser.id;
-        }
+        const userId = req.user.id;
 
         const device = await Device.findOne({
             where: { user_id: userId, device_id: device_id, is_active: true }
@@ -196,13 +139,9 @@ router.post('/heartbeat', heartbeatValidation, async (req, res) => {
             });
         }
 
-        // Build update payload — only update fields that were sent
-        const updates = {
-            last_seen_at: new Date(),
-        };
-
+        const updates = { last_seen_at: new Date() };
         if (tunnel_url !== undefined) updates.tunnel_url = tunnel_url;
-        if (local_ip !== undefined)   updates.local_ip = local_ip;
+        if (local_ip !== undefined) updates.local_ip = local_ip;
         if (file_count !== undefined) updates.file_count = file_count;
         if (disk_free_bytes !== undefined) updates.disk_free_bytes = disk_free_bytes;
 
@@ -226,28 +165,28 @@ router.post('/heartbeat', heartbeatValidation, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════
 // GET /api/devices/master
 //
-// Called by Slave nodes (Android/iOS/Python) to discover the Master.
-// Returns the Master's tunnel_url, local_ip, and online status.
+// Sprint 3 — IDENTITY-BOUND MASTER DISCOVERY
 //
-// Auth: verifyToken middleware
+// The Slave's JWT contains an email claim. This endpoint only returns
+// a Master that was registered by the SAME email. This means:
+//   - User A's Android Slave can only connect to User A's Master
+//   - User B cannot discover User A's Master even with a valid JWT
+//   - Multi-tenancy is enforced at the device registry level
 // ═══════════════════════════════════════════════════════════════════════
 
 router.get('/master', async (req, res) => {
     try {
-        // Resolve user ID
-        let userId = req.user.id;
-        if (userId === 'M2M_CLIENT') {
-            const adminEmail = process.env.ALLOWED_ADMIN_EMAIL;
-            const adminUser = adminEmail
-                ? await User.findOne({ where: { email: adminEmail } })
-                : null;
-            if (!adminUser) {
-                return res.status(404).json({ error: 'Admin user not found' });
-            }
-            userId = adminUser.id;
+        const userId = req.user.id;
+        const slaveEmail = req.user.email;
+
+        if (!slaveEmail) {
+            return res.status(400).json({
+                error: 'Email claim missing',
+                message: 'JWT must contain an email claim for identity-bound discovery.'
+            });
         }
 
-        // Try to find an online Master first (seen in last 5 minutes)
+        // Find the online Master for THIS user
         let master = await Device.findOnlineMaster(userId);
 
         if (master) {
@@ -257,7 +196,7 @@ router.get('/master', async (req, res) => {
             });
         }
 
-        // No online Master — check if one exists but is offline
+        // Offline Master
         master = await Device.findMaster(userId);
 
         if (master) {
@@ -271,15 +210,14 @@ router.get('/master', async (req, res) => {
             return res.json({
                 master: master.toMasterInfoJSON(),
                 status: 'MASTER_OFFLINE',
-                message: `Master "${master.device_name}" was last seen ${formatted}. Files will sync when it comes back online.`,
+                message: `Master "${master.device_name}" was last seen ${formatted}.`,
             });
         }
 
-        // No Master registered at all
         res.json({
             master: null,
             status: 'NO_MASTER',
-            message: 'No Master node has been registered. Run the RGBC Drive desktop client as Master first.',
+            message: 'No Master node registered for your account.',
         });
 
     } catch (error) {
@@ -289,29 +227,11 @@ router.get('/master', async (req, res) => {
 });
 
 
-// ═══════════════════════════════════════════════════════════════════════
-// GET /api/devices/peers
-//
-// Returns all registered devices for the authenticated user.
-// Useful for a "My Devices" dashboard.
-//
-// Auth: verifyToken middleware
-// ═══════════════════════════════════════════════════════════════════════
+// ── GET /api/devices/peers ──────────────────────────────────────────
 
 router.get('/peers', async (req, res) => {
     try {
-        let userId = req.user.id;
-        if (userId === 'M2M_CLIENT') {
-            const adminEmail = process.env.ALLOWED_ADMIN_EMAIL;
-            const adminUser = adminEmail
-                ? await User.findOne({ where: { email: adminEmail } })
-                : null;
-            if (!adminUser) {
-                return res.status(404).json({ error: 'Admin user not found' });
-            }
-            userId = adminUser.id;
-        }
-
+        const userId = req.user.id;
         const devices = await Device.findActiveDevicesForUser(userId);
 
         const peers = devices.map(d => ({
@@ -340,6 +260,5 @@ router.get('/peers', async (req, res) => {
         res.status(500).json({ error: 'Failed to list peers' });
     }
 });
-
 
 module.exports = router;
