@@ -43,6 +43,9 @@ _IGNORED_NAMES = {
 }
 _IGNORED_PREFIXES = ("~$", ".")
 _IGNORED_SUFFIXES = (".tmp", ".crdownload", ".partial", ".swp")
+_IGNORED_DIRS = {
+    ".rgbc_uploads",
+}
 
 
 class _DebouncedAction:
@@ -140,6 +143,9 @@ class SyncEventHandler(FileSystemEventHandler):
         if basename in _IGNORED_NAMES:
             return True
         if any(basename.startswith(p) for p in _IGNORED_PREFIXES):
+            return True
+        path_parts = abs_path.replace("\\", "/").split("/")
+        if any(part in _IGNORED_DIRS for part in path_parts):
             return True
         if any(basename.endswith(s) for s in _IGNORED_SUFFIXES):
             return True

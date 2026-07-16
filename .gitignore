@@ -43,4 +43,9 @@ rgbc-drive/__pycache__/
 rgbc-drive/dist
 rgbc-drive/RGBCDrive.spec
 rgbc-drive/build.bat
+rgbc-drive/oauth_config.py
 src\server.txt
+
+ANDROID APP KEY
+
+graphify-out

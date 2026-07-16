@@ -55,12 +55,14 @@ class TrayIcon:
         on_pause: Callable,
         on_resume: Callable,
         on_quit: Callable,
+        on_open_dashboard: Optional[Callable] = None,  # Sprint 3.5
     ):
         self.sync_root = sync_root
         self._on_force_sync = on_force_sync
         self._on_pause = on_pause
         self._on_resume = on_resume
         self._on_quit = on_quit
+        self._on_open_dashboard = on_open_dashboard  # Sprint 3.5
 
         self._status = STATUS_OFFLINE
         self._status_text = "Starting..."
@@ -120,9 +122,14 @@ class TrayIcon:
                 "Force Sync Now",
                 action=lambda icon, item: self._on_force_sync(),
             ),
-            pystray.MenuItem(
+               pystray.MenuItem(
                 "Open RGBC Drive Folder",
                 action=lambda icon, item: self._open_folder(),
+            ),
+            pystray.MenuItem(
+                "Open Dashboard",
+                action=lambda icon, item: self._open_dashboard(),
+                visible=lambda _: self._on_open_dashboard is not None,  # Sprint 3.5
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -145,12 +152,14 @@ class TrayIcon:
             self._on_resume()
             self.set_status(STATUS_UP_TO_DATE, "Resumed")
 
-    def _open_folder(self):
-        """Open the RGBC Drive folder in Windows Explorer."""
+    def _open_dashboard(self):
+        """Open the local dashboard in the default browser. Sprint 3.5."""
+        if self._on_open_dashboard is None:
+            return
         try:
-            os.startfile(self.sync_root)
+            self._on_open_dashboard()
         except Exception as e:
-            logger.error(f"Failed to open folder: {e}")
+            logger.error(f"Failed to open dashboard: {e}")
 
     def _quit(self):
         """Quit the application."""

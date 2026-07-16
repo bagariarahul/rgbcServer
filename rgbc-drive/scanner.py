@@ -44,6 +44,13 @@ IGNORED_NAMES = {
     ".DS_Store",
 }
 
+# Sprint 3.4 hotfix: directories the scanner must NEVER descend into.
+# .rgbc_uploads holds in-progress chunked-upload temp files — uploading
+# those to the gateway would leak partial user data and pollute storage.
+IGNORED_DIRS = {
+    ".rgbc_uploads",
+}
+
 IGNORED_PREFIXES = ("~$", ".")   # Office temp files, hidden files
 IGNORED_SUFFIXES = (".tmp", ".crdownload", ".partial", ".swp")
 
@@ -101,7 +108,7 @@ class DirectoryScanner:
             # prevents os.walk from descending into them)
             dirnames[:] = [
                 d for d in dirnames
-                if not d.startswith(".") and d not in IGNORED_NAMES
+                if not d.startswith(".") and d not in IGNORED_DIRS
             ]
 
             for filename in filenames:

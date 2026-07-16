@@ -41,7 +41,7 @@ class SyncDatabase:
     """
 
     # ── Schema version — bump this when tables change ────────────────
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -98,10 +98,36 @@ class SyncDatabase:
             );
 
             -- Key-value store for global sync metadata.
+         -- Key-value store for global sync metadata.
             CREATE TABLE IF NOT EXISTS sync_meta (
                 key     TEXT PRIMARY KEY,
                 value   TEXT
             );
+
+            -- ── Sprint 3.3: in-progress chunked uploads ─────────────
+            -- One row per upload session. Created by /upload/init,
+            -- updated as chunks arrive, deleted on finalize/expiry.
+            CREATE TABLE IF NOT EXISTS uploads_in_progress (
+                upload_id        TEXT PRIMARY KEY,
+                owner_user_id    TEXT NOT NULL,
+                relative_path    TEXT NOT NULL,
+                original_name    TEXT NOT NULL,
+                total_size       INTEGER NOT NULL,
+                total_sha256     TEXT NOT NULL,
+                chunk_size       INTEGER NOT NULL,
+                total_chunks     INTEGER NOT NULL,
+                received_mask    BLOB NOT NULL,
+                temp_dir         TEXT NOT NULL,
+                mime_type        TEXT,
+                created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                expires_at       TEXT NOT NULL,
+                last_chunk_at    TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_uploads_in_progress_expiry
+                ON uploads_in_progress(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_uploads_in_progress_owner
+                ON uploads_in_progress(owner_user_id);
         """)
 
         # Set schema version if not already set
@@ -286,6 +312,105 @@ class SyncDatabase:
             "pending_upload": pending,
             "total_size_bytes": total_size,
         }
+    
+    def create_upload(
+        self,
+        upload_id: str,
+        owner_user_id: str,
+        relative_path: str,
+        original_name: str,
+        total_size: int,
+        total_sha256: str,
+        chunk_size: int,
+        total_chunks: int,
+        temp_dir: str,
+        expires_at: str,
+        mime_type: Optional[str] = None,
+    ) -> None:
+        """Create a new in-progress upload session."""
+        # Bitmap with all bits = 0 (no chunks received yet).
+        # Size in bytes = ceil(total_chunks / 8). For a 1 GB file with 50 MB
+        # chunks that's 21 chunks → 3 bytes. Fits comfortably in a BLOB.
+        mask_bytes = (total_chunks + 7) // 8
+        received_mask = bytes(mask_bytes)
+ 
+        self._conn.execute(
+            """
+            INSERT INTO uploads_in_progress (
+                upload_id, owner_user_id, relative_path, original_name,
+                total_size, total_sha256, chunk_size, total_chunks,
+                received_mask, temp_dir, mime_type, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (upload_id, owner_user_id, relative_path, original_name,
+             total_size, total_sha256, chunk_size, total_chunks,
+             received_mask, temp_dir, mime_type, expires_at),
+        )
+        self._conn.commit()
+ 
+    def get_upload(self, upload_id: str) -> Optional[sqlite3.Row]:
+        """Get an upload session by ID. Returns None if missing or expired."""
+        row = self._conn.execute(
+            "SELECT * FROM uploads_in_progress WHERE upload_id = ?",
+            (upload_id,),
+        ).fetchone()
+        if not row:
+            return None
+        # Lazy expiry check — caller treats None as 404
+        try:
+            expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > expires:
+                return None
+        except (ValueError, AttributeError):
+            pass
+        return row
+ 
+    def mark_chunk_received(self, upload_id: str, chunk_index: int) -> None:
+        """Set bit `chunk_index` in the received_mask bitmap."""
+        row = self._conn.execute(
+            "SELECT received_mask FROM uploads_in_progress WHERE upload_id = ?",
+            (upload_id,),
+        ).fetchone()
+        if not row:
+            return
+        mask = bytearray(row["received_mask"])
+        byte_idx = chunk_index // 8
+        bit_idx = chunk_index % 8
+        if byte_idx < len(mask):
+            mask[byte_idx] |= (1 << bit_idx)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE uploads_in_progress SET received_mask = ?, last_chunk_at = ? WHERE upload_id = ?",
+            (bytes(mask), now, upload_id),
+        )
+        self._conn.commit()
+ 
+    @staticmethod
+    def get_missing_chunks(received_mask: bytes, total_chunks: int) -> list[int]:
+        """Return list of chunk indices NOT yet received."""
+        missing = []
+        for i in range(total_chunks):
+            byte_idx = i // 8
+            bit_idx = i % 8
+            if byte_idx >= len(received_mask) or not (received_mask[byte_idx] & (1 << bit_idx)):
+                missing.append(i)
+        return missing
+ 
+    def delete_upload(self, upload_id: str) -> None:
+        """Remove an upload session (called on finalize success or abort)."""
+        self._conn.execute(
+            "DELETE FROM uploads_in_progress WHERE upload_id = ?",
+            (upload_id,),
+        )
+        self._conn.commit()
+ 
+    def get_expired_uploads(self) -> list[sqlite3.Row]:
+        """Return upload sessions past their TTL — for the cleanup task."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        return self._conn.execute(
+            "SELECT * FROM uploads_in_progress WHERE expires_at < ?",
+            (now_iso,),
+        ).fetchall()
 
     def close(self):
         """Close the current thread's connection."""

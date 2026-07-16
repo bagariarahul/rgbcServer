@@ -102,7 +102,11 @@ from api_client import APIClient
 from master_oauth import MasterOAuth
 from watcher import FileWatcher
 from poller import SyncPoller
-from master_api import start_master_api
+from master_api import (
+    start_master_api,
+    set_dashboard_callbacks,    # Sprint 3.5
+    record_heartbeat,           # Sprint 3.5b
+)
 from tunnel_manager import TunnelManager
 from tray import TrayIcon, STATUS_SYNCING, STATUS_UP_TO_DATE, STATUS_OFFLINE, STATUS_ERROR
 
@@ -240,6 +244,13 @@ def heartbeat_loop(api, device_id, db, stop_event, tunnel_getter=None):
             resp = api.session.post(f"{api.server_url}/api/devices/heartbeat", json=payload, timeout=(5, 10))
             if resp.status_code != 200:
                 logger.debug(f"Heartbeat response: {resp.status_code}")
+            else:
+                # Sprint 3.5b: tell master_api the heartbeat went through,
+                # so the dashboard's "lastHeartbeatSecondsAgo" stays fresh.
+                try:
+                    record_heartbeat()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug(f"Heartbeat failed (will retry): {e}")
 
@@ -282,41 +293,23 @@ def main():
     db = SyncDatabase(db_path)
     logger.info(f"Database:     {db_path}")
 
-    # ── Google OAuth (Sprint 3) ──────────────────────────────────
-    # Resolve client_secret.json from external dir (user provides it)
-# ── Google OAuth (Sprint 3.1) ────────────────────────────────
-    # Resolve client_secret.json with fallback chain:
-    #   1. EXTERNAL_DIR/client_secret.json — dev override or per-install rotation
-    #   2. INTERNAL_DIR/client_secret.json — bundled in the .exe (production)
-    # Per Google's installed-app guidance, the desktop client secret is
-    # not confidential and ships inside the bundle.
-    _external_cs = EXTERNAL_DIR / "client_secret.json"
-    _internal_cs = INTERNAL_DIR / "client_secret.json"
-    if _external_cs.is_file():
-        client_secret = str(_external_cs)
-        logger.info(f"🔐 Using external client_secret.json: {_external_cs}")
-    elif _internal_cs.is_file():
-        client_secret = str(_internal_cs)
-        logger.info(f"🔐 Using bundled client_secret.json")
-    else:
-        logger.error(
-            f"❌ client_secret.json not found in either:\n"
-            f"   {_external_cs}\n"
-            f"   {_internal_cs}\n"
-            "   Rebuild the .exe with client_secret.json next to the .spec file."
-        )
-        input("Press Enter to exit...")
-        sys.exit(1)
+    # ── Google OAuth (Sprint 3.5b: PKCE) ─────────────────────────
+    # No client_secret file needed. The Desktop OAuth client_id is
+    # bundled in master_oauth.py as GOOGLE_DESKTOP_CLIENT_ID and
+    # PKCE provides the per-flow proof. The Gateway accepts id_tokens
+    # with that audience via its VALID_CLIENT_IDS array.
     oauth_cache = os.path.join(SYNC_ROOT, ".rgbc_oauth_cache.json")
 
     oauth = MasterOAuth(
         gateway_url=SERVER_URL,
-        client_secret_path=client_secret,
         cache_path=oauth_cache,
     )
 
     if not oauth.jwt:
-        logger.error("❌ Failed to authenticate. Check client_secret.json and Gateway availability.")
+        logger.error(
+            "❌ Failed to authenticate. Check Gateway availability "
+            "and that GOOGLE_DESKTOP_CLIENT_ID is set on the Gateway."
+        )
         input("Press Enter to exit...")
         sys.exit(1)
 
@@ -411,6 +404,70 @@ def main():
         if poller_ref["obj"]: poller_ref["obj"].start()
         if watcher_ref["obj"]: watcher_ref["obj"].start()
 
+    # ── Desktop UI wiring (Sprint 3.5b) ───────────────────────────
+    # The browser dashboard is gone. The customtkinter window below
+    # replaces it. master_api still serves /api/dashboard/* JSON
+    # endpoints — the window calls them from the same process.
+    desktop_ui_ref: dict = {"obj": None}
+
+    def on_open_desktop_ui():
+        if desktop_ui_ref["obj"]:
+            desktop_ui_ref["obj"].show()
+
+    def on_dashboard_force_scan():
+        # Run scan on a worker thread so the HTTP request returns fast.
+        def _scan():
+            try:
+                scanner.scan()
+            except Exception as e:
+                logger.error(f"Dashboard-triggered scan failed: {e}")
+        threading.Thread(target=_scan, daemon=True, name="DashboardScan").start()
+
+    def on_dashboard_switch_account():
+        # Clear .rgbc_owner + OAuth cache. User must restart RGBC Drive
+        # to re-authenticate. Schedule process exit so the desktop UX
+        # matches the dashboard message. Wipe-DB option was dropped in
+        # 3.5b — master_api.py's switch_account callback takes no args,
+        # and we'd rather not surprise users by deleting their sync DB.
+        logger.info("🔄 Switch account requested")
+        try:
+            owner_file = EXTERNAL_DIR / ".rgbc_owner"
+            if owner_file.exists():
+                owner_file.unlink()
+                logger.info(f"  Removed: {owner_file}")
+        except OSError as e:
+            logger.warning(f"  Could not remove owner file: {e}")
+
+        try:
+            cache_file = Path(SYNC_ROOT) / ".rgbc_oauth_cache.json"
+            if cache_file.exists():
+                cache_file.unlink()
+                logger.info(f"  Removed: {cache_file}")
+        except OSError as e:
+            logger.warning(f"  Could not remove OAuth cache: {e}")
+
+        # Schedule a clean shutdown after returning the HTTP response.
+        # 500 ms gives FastAPI enough time to flush the JSON response
+        # back through cloudflared before the process exits.
+        def _delayed_exit():
+            time.sleep(0.5)
+            logger.info("🛑 Restart required to switch accounts. Exiting…")
+            on_quit()
+            os._exit(0)
+        threading.Thread(target=_delayed_exit, daemon=True, name="SwitchAcctExit").start()
+
+    set_dashboard_callbacks(
+        static_dir="",  # Sprint 3.5b: customtkinter UI replaces browser dashboard;
+                        # static-file serving routes are unused but harmless.
+        pause_sync=on_pause,
+        resume_sync=on_resume,
+        force_scan=on_dashboard_force_scan,
+        switch_account=on_dashboard_switch_account,
+        tunnel_getter=lambda: tunnel.get_url(timeout=0) if tunnel else None,
+        app_version="3.5b",
+    )
+    logger.info("🪟 Dashboard API ready (consumed by desktop UI)")
+
     def on_quit():
         logger.info("🛑 Shutting down RGBC Drive")
         heartbeat_stop.set()
@@ -446,9 +503,21 @@ def main():
 
     threading.Thread(target=periodic_scan_loop, daemon=True, name="PeriodicScan").start()
 
-    # ── System tray ──────────────────────────────────────────────
+    # ── System tray + Desktop UI (Sprint 3.5b) ───────────────────
+    # Both pystray and Tk want exclusive ownership of the main thread's
+    # message loop on Windows. Tk gets it (the user-visible window);
+    # pystray runs on a daemon thread.
     stats = db.get_stats()
-    tray = TrayIcon(sync_root=SYNC_ROOT, on_force_sync=on_force_sync, on_pause=on_pause, on_resume=on_resume, on_quit=on_quit)
+    tray = TrayIcon(
+        sync_root=SYNC_ROOT,
+        on_force_sync=on_force_sync,
+        on_pause=on_pause,
+        on_resume=on_resume,
+        on_quit=lambda: (
+            desktop_ui_ref["obj"].shutdown() if desktop_ui_ref["obj"] else on_quit()
+        ),
+        on_open_dashboard=on_open_desktop_ui,  # Sprint 3.5b: opens native window
+    )
 
     current_tunnel = tunnel_getter() if tunnel_getter else None
     if current_tunnel:
@@ -462,7 +531,21 @@ def main():
     tray.set_stats(total=stats["total_files"], synced=stats["synced"],
                     pending=stats["pending_upload"], size_bytes=stats["total_size_bytes"])
 
-    tray.run()
+    # Tray on its own thread (NOT main)
+    threading.Thread(target=tray.run, daemon=True, name="TrayIcon").start()
+
+    # Desktop UI owns the main thread until the user truly quits.
+    from desktop_ui import DesktopUI
+    desktop_ui = DesktopUI(
+        port=MASTER_PORT,
+        on_close_to_tray=lambda: logger.info("🪟 Window minimized to tray"),
+        on_quit=on_quit,
+    )
+    desktop_ui_ref["obj"] = desktop_ui
+
+    logger.info("🪟 Opening RGBC Drive window…")
+    desktop_ui.start()  # blocks until window destroyed
+    logger.info("Goodbye!")
     logger.info("Goodbye!")
 
 

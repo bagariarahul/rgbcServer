@@ -1,49 +1,157 @@
 """
-RGBC Drive — Master Node Google OAuth
+RGBC Drive — Master Node Google OAuth (Sprint 3.5b: PKCE)
 
-Sprint 3: Replaces the M2M_API_KEY with a proper Google OAuth flow.
-The Master now authenticates as a real user (the admin) and receives
-an RS256 JWT from the API Gateway — identical to the Android flow.
+Sprint 3.5b: Eliminated the user-supplied client_secret.json. The
+Desktop OAuth credentials are now resolved from oauth_config.py — a
+gitignored module compiled into the .exe at build time. End users
+download an installer, click "Sign in with Google", and are done. They
+never see a credential.
+
+What changed and why:
+  - No client_secret.json anywhere. Nothing to download, nothing to
+    place next to the .exe, no Google Cloud Console for end users.
+  - Credentials are baked into the build, not the source tree and not
+    the user's .env. See oauth_config.example.py for the full rationale.
+  - PKCE (RFC 7636) protects the authorization code in transit. Note
+    that Google's /token endpoint STILL requires client_secret for
+    Desktop clients — PKCE is defence-in-depth here, not a replacement.
+  - The Gateway accepts id_tokens whose audience matches either the
+    Android or Desktop client_id (VALID_CLIENT_IDS in googleAuth.js).
+
+Threat model, honestly stated:
+  Anyone holding the .exe can extract the client_secret. Google's
+  installed-app guidance says this is expected and acceptable — the
+  secret "is obviously not treated as a secret" for native apps. The
+  blast radius of extraction is that an attacker can build an app whose
+  consent screen carries RGBC branding. They cannot mint user tokens
+  without that user completing Google's consent flow, and they cannot
+  bypass the Gateway's audience check or the master's owner binding.
+  Sprint 5 (gateway-mediated OAuth) closes even this gap.
 
 Flow:
   1. Check for cached credentials in .rgbc_oauth_cache.json
-  2. If expired/missing → open browser for Google Sign-In
+  2. If expired/missing → open browser for Google Sign-In (PKCE)
   3. Extract the id_token from the Google credential
   4. POST id_token to Gateway's /api/auth/google-signin
-  5. Gateway validates, returns RS256 JWT (30-day TTL)
+  5. Gateway validates the audience, returns RS256 JWT (30-day TTL)
   6. Cache the JWT locally for subsequent runs
   7. Master uses this JWT for register/heartbeat/all API calls
 
 Requirements:
   pip install google-auth google-auth-oauthlib
 
-Setup:
-  1. Go to Google Cloud Console → APIs & Services → Credentials
-  2. Create an OAuth 2.0 Client ID of type "Desktop application"
-  3. Download the JSON and save it as client_secret.json next to rgbc_drive.py
-  4. The GOOGLE_CLIENT_ID in the Gateway .env must match the Web client ID
-     (Google issues both Desktop + Web IDs — the id_token audience must match)
+Setup (once per build machine, by the developer):
+  copy oauth_config.example.py oauth_config.py
+  Fill in the two values. Confirm oauth_config.py is in .gitignore.
+
+Setup (by end users):
+  Nothing.
 """
 
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 import requests
-import jwt as pyjwt  # Sprint 3.1: extract userId from JWT for owner-binding
+import jwt as pyjwt
 
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 logger = logging.getLogger("RGBCDrive.OAuth")
 
+# ═══════════════════════════════════════════════════════════════════════
+# Desktop OAuth credential resolution (Sprint 3.5b)
+#
+# The client_id and client_secret are NOT hardcoded here — GitHub's push
+# protection blocks Google OAuth secret patterns, and a credential
+# committed to a public repo is leaked permanently. They live in
+# oauth_config.py, which is gitignored and bundled into the .exe by
+# PyInstaller (Analysis follows the import below).
+#
+# Resolution order:
+#   1. oauth_config.py     — production. Present on the build machine,
+#                            compiled into the bundle, absent from git.
+#   2. Environment vars    — fallback for a fresh clone with no
+#                            oauth_config.py yet, or CI. NOT a shipping
+#                            path: end users never have these set, because
+#                            setup_wizard.py's .env has user settings only.
+#
+# On the security posture: Google's installed-app guidance states the
+# desktop client_secret is "obviously not treated as a secret" — it ships
+# inside every copy of the binary. PKCE, user consent, and the Gateway's
+# audience check (VALID_CLIENT_IDS in googleAuth.js) are what provide
+# actual security. Keeping it out of git isn't about hiding it from
+# someone holding the .exe; it's about not handing it to every scanner
+# that indexes public repos. Different exposure class, free to avoid.
+#
+# Rotation: add a new secret in Google Cloud Console, update
+# oauth_config.py, rebuild. If the client_id changes too, the Gateway's
+# .env GOOGLE_DESKTOP_CLIENT_ID must be updated in lockstep or desktop
+# sign-in returns 401.
+#
+# Sprint 5 removes this entirely — gateway-mediated OAuth keeps the
+# secret server-side and the desktop holds no credential at all.
+# ═══════════════════════════════════════════════════════════════════════
+
+_PLACEHOLDER_PREFIX = "PASTE_"
+
+
+def _resolve_oauth_credentials() -> tuple:
+    """
+    Returns (client_id, client_secret, source_label).
+    Empty strings + source 'none' if nothing usable was found.
+
+    Resolved lazily (from MasterOAuth.__init__, not at module import) so
+    the result is never frozen before load_dotenv() has run.
+    """
+    # ── 1. Bundled build config (production path) ────────────────────
+    try:
+        import oauth_config  # gitignored; bundled by PyInstaller
+        cid = str(getattr(oauth_config, "GOOGLE_DESKTOP_CLIENT_ID", "") or "").strip()
+        csec = str(getattr(oauth_config, "GOOGLE_DESKTOP_CLIENT_SECRET", "") or "").strip()
+        # Guard against someone copying the .example file without editing it
+        if cid and csec and not cid.startswith(_PLACEHOLDER_PREFIX) \
+                and not csec.startswith(_PLACEHOLDER_PREFIX):
+            return cid, csec, "oauth_config.py"
+        if cid.startswith(_PLACEHOLDER_PREFIX) or csec.startswith(_PLACEHOLDER_PREFIX):
+            logger.warning(
+                "oauth_config.py still contains template placeholders — "
+                "fill in the real values from Google Cloud Console."
+            )
+    except ImportError:
+        pass
+
+    # ── 2. Environment (fresh clone / CI only — never end users) ─────
+    cid = (os.getenv("GOOGLE_DESKTOP_CLIENT_ID") or "").strip()
+    csec = (os.getenv("GOOGLE_DESKTOP_CLIENT_SECRET") or "").strip()
+    if cid and csec:
+        return cid, csec, "environment"
+
+    return "", "", "none"
+
+
+_MISSING_CREDS_HELP = (
+    "Google Desktop OAuth credentials not found.\n"
+    "  This build has no oauth_config.py and no GOOGLE_DESKTOP_CLIENT_ID /\n"
+    "  GOOGLE_DESKTOP_CLIENT_SECRET in the environment.\n"
+    "\n"
+    "  If you just cloned the repo:\n"
+    "    1. copy oauth_config.example.py oauth_config.py\n"
+    "    2. Fill in both values from Google Cloud Console →\n"
+    "       APIs & Services → Credentials → 'RGBC Master' (Desktop)\n"
+    "    3. Rebuild:  pyinstaller .\\rgbc_drive_1.spec --clean --noconfirm\n"
+    "\n"
+    "  If you are an end user seeing this: the .exe was built incorrectly.\n"
+    "  Please report it — you should never need to configure credentials."
+)
+
 
 class MasterOAuth:
     """
-    Manages Google OAuth authentication for the Master Node.
+    Manages Google OAuth authentication for the Master Node using PKCE.
     Caches the Gateway JWT locally so the browser flow only runs once
     (or when the 30-day token expires).
     """
@@ -53,16 +161,31 @@ class MasterOAuth:
     def __init__(
         self,
         gateway_url: str,
-        client_secret_path: str = "client_secret.json",
         cache_path: str = ".rgbc_oauth_cache.json",
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
     ):
+        """
+        Sprint 3.5b: client_secret_path REMOVED — no JSON file is read.
+        Credentials resolve from oauth_config.py (bundled) or the
+        environment. Pass client_id/client_secret explicitly only when
+        testing against an alternate OAuth project.
+        """
         self.gateway_url = gateway_url.rstrip("/")
-        self.client_secret_path = client_secret_path
         self.cache_path = cache_path
+
+        resolved_id, resolved_secret, source = _resolve_oauth_credentials()
+        self.client_id = (client_id or resolved_id or "").strip()
+        self.client_secret = (client_secret or resolved_secret or "").strip()
+        self._creds_source = "explicit" if (client_id and client_secret) else source
+
+        if self.client_id and self.client_secret:
+            logger.debug(f"OAuth credentials loaded from: {self._creds_source}")
+
         self._jwt: Optional[str] = None
         self._jwt_expires_at: float = 0
         self._email: Optional[str] = None
-        self._user_id: Optional[str] = None  # Sprint 3.1
+        self._user_id: Optional[str] = None
 
     @property
     def jwt(self) -> Optional[str]:
@@ -71,12 +194,11 @@ class MasterOAuth:
             return self._jwt
 
         # Try loading from cache
-        cached = self._load_cache()
-        if cached:
+        if self._load_cache():
             return self._jwt
 
         # Need fresh login
-        logger.info("No valid JWT — initiating Google OAuth flow...")
+        logger.info("No valid JWT — initiating Google OAuth flow (PKCE)...")
         return self._do_oauth_flow()
 
     @property
@@ -85,11 +207,13 @@ class MasterOAuth:
         if not self._email:
             self.jwt  # Triggers load/refresh
         return self._email
+
     @property
     def user_id(self) -> Optional[str]:
         """
-        The authenticated user's canonical Gateway userId (from JWT 'userId' claim).
-        Required by rgbc_drive.py for owner binding.
+        The authenticated user's canonical Gateway userId
+        (from the JWT 'userId' claim). Required by rgbc_drive.py
+        for owner binding.
         """
         if not self._user_id:
             self.jwt  # Triggers load/refresh
@@ -102,10 +226,13 @@ class MasterOAuth:
             return {"Authorization": f"Bearer {token}"}
         return {}
 
-    # ── OAuth Browser Flow ───────────────────────────────────────────
+    # ── OAuth Browser Flow (PKCE) ────────────────────────────────────
 
     def _do_oauth_flow(self) -> Optional[str]:
-        """Run the full Google OAuth → Gateway JWT exchange."""
+        """
+        Run the full Google OAuth → Gateway JWT exchange.
+        Sprint 3.5b: PKCE flow, no client_secret file required.
+        """
         try:
             from google_auth_oauthlib.flow import InstalledAppFlow
         except ImportError:
@@ -115,26 +242,39 @@ class MasterOAuth:
             )
             return None
 
-        if not os.path.isfile(self.client_secret_path):
-            logger.error(
-                f"OAuth client_secret.json not found at: {self.client_secret_path}\n"
-                "  Download it from Google Cloud Console → APIs & Services → Credentials\n"
-                "  → OAuth 2.0 Client ID (Desktop application) → Download JSON"
-            )
+        if not self.client_id or not self.client_secret:
+            logger.error(_MISSING_CREDS_HELP)
             return None
 
         try:
-            # Step 1: Browser-based Google login
-            flow = InstalledAppFlow.from_client_secrets_file(
-                self.client_secret_path,
+            # Build a client config dict in-memory. No file involved.
+            #
+            # Sprint 3.5b note: Google's /token endpoint requires
+            # client_secret even for Desktop clients using PKCE — an empty
+            # string returns "(invalid_request) client_secret is missing".
+            # PKCE is defence-in-depth alongside the secret here, not a
+            # replacement for it. Both values come from oauth_config.py.
+            client_config = {
+                "installed": {
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+
+            flow = InstalledAppFlow.from_client_config(
+                client_config,
                 scopes=self.SCOPES,
             )
+
             credentials = flow.run_local_server(
                 port=8742,
                 prompt='consent',
                 success_message=(
                     "RGBC Drive authenticated! You can close this tab.\n"
-                    "Return to the terminal to continue setup."
+                    "Return to RGBC Drive to continue."
                 ),
             )
 
@@ -143,7 +283,7 @@ class MasterOAuth:
                 return None
 
             id_token = credentials.id_token
-            logger.info("✅ Google id_token obtained")
+            logger.info("✅ Google id_token obtained (PKCE flow)")
 
             # Step 2: Exchange id_token for Gateway JWT
             return self._exchange_for_jwt(id_token)
@@ -170,18 +310,14 @@ class MasterOAuth:
             if resp.status_code == 200:
                 data = resp.json()
 
-                # Sprint 3.1: Gateway response shape is nested per OAuth 2.0
-                # convention: { user: {...}, tokens: { accessToken, refreshToken,
-                # expiresIn } }. Reading top-level "accessToken" silently
-                # produced None and corrupted the cache.
+                # Gateway response shape (Sprint 3.1):
+                # { user: {...}, tokens: { accessToken, refreshToken, expiresIn } }
                 tokens = data.get("tokens") or {}
                 jwt_token = tokens.get("accessToken")
                 user_obj = data.get("user") or {}
                 email = user_obj.get("email")
 
-                # Hard-validate before assigning. If the gateway's response
-                # shape changes again, fail loudly here instead of caching
-                # garbage and lying about success.
+                # Hard-validate before assigning so we never cache a None JWT.
                 if not isinstance(jwt_token, str) or not jwt_token:
                     logger.error(
                         f"Gateway returned 200 but no accessToken in response. "
@@ -207,9 +343,9 @@ class MasterOAuth:
                 self._email = email
                 self._jwt_expires_at = time.time() + expires_in - 3600  # 1h safety margin
 
-                # Sprint 3.1: Extract userId for owner binding. No signature
-                # verification needed here — TLS to api.bagariaa.in already
-                # established trust; master_api.verify_auth() does the
+                # Sprint 3.1: Extract userId for owner binding.
+                # No signature verification needed here — TLS to api.bagariaa.in
+                # already established trust; master_api.verify_auth() does the
                 # cryptographic check on every inbound request.
                 try:
                     claims = pyjwt.decode(
@@ -238,6 +374,13 @@ class MasterOAuth:
                 )
                 return self._jwt
 
+            elif resp.status_code == 401:
+                logger.error(
+                    "🚫 Gateway rejected the Google id_token. Most likely cause: "
+                    "the Gateway's GOOGLE_DESKTOP_CLIENT_ID env var doesn't match "
+                    f"this build's client_id ({self.client_id[:32]}...)."
+                )
+                return None
             elif resp.status_code == 403:
                 logger.error(
                     "🚫 Access denied by Gateway. Check the gateway logs — "
@@ -245,7 +388,9 @@ class MasterOAuth:
                 )
                 return None
             else:
-                logger.error(f"Gateway JWT exchange failed: {resp.status_code} — {resp.text[:200]}")
+                logger.error(
+                    f"Gateway JWT exchange failed: {resp.status_code} — {resp.text[:200]}"
+                )
                 return None
 
         except Exception as e:
@@ -279,8 +424,7 @@ class MasterOAuth:
             with open(self.cache_path, 'r') as f:
                 cache_data = json.load(f)
 
-            # Sprint 3.1: Reject corrupt/incomplete cache entries (e.g. one
-            # written by an earlier broken exchange where jwt ended up null).
+            # Reject corrupt/incomplete cache entries.
             cached_jwt = cache_data.get("jwt")
             if not isinstance(cached_jwt, str) or not cached_jwt:
                 logger.info("Cache entry has no usable JWT — discarding and re-authenticating")
@@ -324,7 +468,7 @@ class MasterOAuth:
         """Force re-authentication on next access."""
         self._jwt = None
         self._jwt_expires_at = 0
-        self._user_id = None  # Sprint 3.1
+        self._user_id = None
         self._email = None
         try:
             if os.path.isfile(self.cache_path):
