@@ -127,9 +127,13 @@ class TrayIcon:
                 action=lambda icon, item: self._open_folder(),
             ),
             pystray.MenuItem(
-                "Open Dashboard",
+                "Show RGBC Drive",
                 action=lambda icon, item: self._open_dashboard(),
-                visible=lambda _: self._on_open_dashboard is not None,  # Sprint 3.5
+                visible=lambda _: self._on_open_dashboard is not None,
+                # Sprint 3.5c: default=True binds this to left/double-click on
+                # the icon itself. Without it the window is unreachable once
+                # closed — right-clicking a hidden overflow icon is not a UX.
+                default=True,
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(

@@ -177,12 +177,16 @@ def create_master_api(
     _owner_user_id = str(owner_user_id or "").strip()
 
     if not _owner_user_id:
-        logger.warning(
-            "⚠️ Master started WITHOUT owner binding. Any valid Gateway JWT "
-            "will be accepted — INSECURE. Pass owner_user_id from rgbc_drive.py."
+        # SECURITY (Sprint 3.6): never run unlocked. An empty owner turns the
+        # 403 check into a no-op and lets ANY authenticated user write to this
+        # disk — this was the multi-tenant leak. Fail loud, don't degrade quiet.
+        raise RuntimeError(
+            "REFUSING TO START: owner_user_id is empty. The master would accept "
+            "uploads from any authenticated user. Pass owner_user_id=oauth.user_id "
+            "from rgbc_drive.py."
         )
-    else:
-        logger.info(f"🔒 Master locked to owner userId: {_owner_user_id}")
+
+    logger.info(f"🔒 Master locked to owner userId: {_owner_user_id}")
 
     # Load the RS256 public key
     _load_public_key()
@@ -543,11 +547,13 @@ def _build_router():
             sync_status="SYNCED",
         )
 
-        if _scanner:
-            try:
-                _scanner.scan()
-            except Exception:
-                pass
+       # Sprint 3.7: the file is ALREADY recorded in the DB above (sync_status=SYNCED).
+        # The previous full scanner.scan() here re-walked the ENTIRE folder on every
+        # received file — O(n²). For a 10k-file backup that's ~50M stat calls, which
+        # drowned the master and hung/killed it (the "crash" was resource exhaustion,
+        # no traceback). The periodic scan thread (every FULL_SCAN_INTERVAL) handles
+        # any drift; per-upload rescan is redundant and fatal under load.
+
 
         logger.info(f"📥 Received from Slave: {safe_name} ({total_bytes:,} bytes, SHA-256: {checksum[:16]}...)")
 
@@ -899,11 +905,10 @@ def _build_router():
         _db.delete_upload(upload_id)
         shutil.rmtree(session["temp_dir"], ignore_errors=True)
 
-        if _scanner:
-            try:
-                _scanner.scan()
-            except Exception:
-                pass
+         # Sprint 3.8: the file is ALREADY indexed above (upsert_local_file, SYNCED).
+         # Removed the full scanner.scan() here — same O(n²) crash the single-shot
+         # handler had. Fires per chunked-upload (large files), rescanning the whole
+         # folder needlessly. Periodic scan thread handles any drift.
 
         logger.info(
             f"📥 Chunked upload finalized: {safe_rel} "

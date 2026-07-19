@@ -96,41 +96,56 @@ class SyncPoller:
         self._set_status("Syncing...")
 
         try:
-            # ── Phase 1: PUSH — upload any pending local files ───────
-            pending = self.db.get_pending_uploads()
-            if pending:
-                logger.info(f"📤 Pushing {len(pending)} pending files")
-                for row in pending:
-                    if self._stop_event.is_set():
-                        return
+            # # ── Phase 1: PUSH — upload any pending local files ───────
+            # pending = self.db.get_pending_uploads()
+            # if pending:
+            #     logger.info(f"📤 Pushing {len(pending)} pending files")
+            #     for row in pending:
+            #         if self._stop_event.is_set():
+            #             return
 
-                    rel_path = row["relative_path"]
-                    abs_path = os.path.join(self.sync_root, rel_path.replace("/", os.sep))
+            #         rel_path = row["relative_path"]
+            #         abs_path = os.path.join(self.sync_root, rel_path.replace("/", os.sep))
 
-                    if not os.path.isfile(abs_path):
-                        # File was deleted between scan and upload
-                        self.db.remove_local_file(rel_path)
-                        continue
+            #         if not os.path.isfile(abs_path):
+            #             # File was deleted between scan and upload
+            #             self.db.remove_local_file(rel_path)
+            #             continue
 
-                    sha256 = row["sha256"]
+            #         sha256 = row["sha256"]
 
-                    # Deduplicate: check if server already has this hash
-                    remote = self.api.check_hash_exists(sha256)
-                    if remote:
-                        server_id = str(remote.get("id", ""))
-                        self.db.mark_synced(rel_path, server_id)
-                        logger.info(f"  ⚡ Dedup: {rel_path}")
-                        continue
+            #         # Deduplicate: check if server already has this hash
+            #         remote = self.api.check_hash_exists(sha256)
+            #         if remote:
+            #             server_id = str(remote.get("id", ""))
+            #             self.db.mark_synced(rel_path, server_id)
+            #             logger.info(f"  ⚡ Dedup: {rel_path}")
+            #             continue
 
-                    # Upload
-                    result = self.api.upload_file(
-                        abs_path,
-                        original_name=os.path.basename(abs_path),
-                    )
-                    if result.success and result.server_file_id:
-                        self.db.mark_synced(rel_path, result.server_file_id)
-                    else:
-                        logger.warning(f"  ❌ Upload failed: {rel_path} — {result.error}")
+            #         # Upload
+            #         result = self.api.upload_file(
+            #             abs_path,
+            #             original_name=os.path.basename(abs_path),
+            #         )
+            #         if result.success and result.server_file_id:
+            #             self.db.mark_synced(rel_path, result.server_file_id)
+            #         else:
+            #             logger.warning(f"  ❌ Upload failed: {rel_path} — {result.error}")
+            # ── Phase 1: PUSH — DISABLED (Sprint 3.8) ────────────────
+            # RGBC is pure peer-to-peer: files flow phone → this master and stop
+            # here. The master does NOT push its files up to the gateway — that
+            # would make the gateway a central store, which is exactly the
+            # "we never see your files" guarantee we're keeping. This push phase
+            # was causing the master to hammer the gateway (HTTP 429 loop) and
+            # was re-filling the server with files after every P2P upload.
+            #
+            # DO NOT re-enable without the opt-in redundant-server design
+            # (Sprint 99: custom/Dropbox-style backup target). The code is
+            # preserved in git history if that feature is built.
+            #
+            # Pull (Phase 2 below) stays ON — that's how phone-pushed files are
+            # reconciled and how restore works.
+            pass
 
             # ── Phase 2: PULL — fetch server manifest and download ───
             logger.debug("📥 Fetching server file manifest")

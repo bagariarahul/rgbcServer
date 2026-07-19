@@ -365,6 +365,22 @@ class SyncDatabase:
             pass
         return row
  
+
+    def find_upload_by_hash(self, sha256: str, owner_user_id: str) -> Optional[sqlite3.Row]:
+        """
+        Sprint 3.8: find an IN-PROGRESS upload session for this content hash + owner.
+        Used by upload_init to dedup against sessions already underway — the missing
+        check that let one file spawn N sessions (12,167 duplicate groups). Excludes
+        expired sessions so a dead session doesn't block a fresh retry.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        return self._conn.execute(
+            "SELECT * FROM uploads_in_progress "
+            "WHERE total_sha256 = ? AND owner_user_id = ? AND expires_at >= ? "
+            "LIMIT 1",
+            (sha256, owner_user_id, now_iso),
+        ).fetchone()
+    
     def mark_chunk_received(self, upload_id: str, chunk_index: int) -> None:
         """Set bit `chunk_index` in the received_mask bitmap."""
         row = self._conn.execute(

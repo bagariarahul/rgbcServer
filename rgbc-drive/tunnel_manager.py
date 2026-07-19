@@ -24,7 +24,7 @@ import subprocess
 import threading
 import time
 from typing import Optional
-
+from paths import get_cloudflared_dir
 logger = logging.getLogger("RGBCDrive.Tunnel")
 
 _URL_PATTERNS = [
@@ -224,8 +224,16 @@ class TunnelManager:
         script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
         exe_name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
 
-        # ── 1. Bundled bin/ directory (highest priority) ─────────────
-        bundled = os.path.join(script_dir, "bin", exe_name)
+       # ── 1. Bundled bin/ directory (highest priority) ─────────────
+        # Sprint 3.5c: this used to be os.path.join(script_dir, "bin", ...),
+        # where script_dir is dirname(sys.argv[0]) — i.e. dist/RGBCDrive/.
+        # But PyInstaller puts `datas` under _internal/, so the bundled
+        # binary lives at dist/RGBCDrive/_internal/bin/cloudflared.exe and
+        # this check never matched. It failed silently, fell through to the
+        # %ProgramFiles% probe, and found the winget-installed copy — so it
+        # looked fine on any dev box and was broken on every clean machine.
+        # paths.get_cloudflared_dir() already knows the correct layout.
+        bundled = str(get_cloudflared_dir() / exe_name)
         if os.path.isfile(bundled):
             # On Unix, ensure it's executable
             if sys.platform != "win32" and not os.access(bundled, os.X_OK):

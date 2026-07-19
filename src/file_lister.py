@@ -1,54 +1,88 @@
 import os
-import sys
+
+SKIP_DIRS = {
+    ".git",
+    ".gradle",
+    ".idea",
+    "build",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+    ".kotlin",
+    ".cxx",
+    "bin",
+    "obj",
+    "target",
+    "dist"
+}
+
+SKIP_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp4", ".mp3", ".wav",
+    ".zip", ".rar", ".7z",
+    ".apk", ".aab",
+    ".jar", ".class",
+    ".db", ".wal", ".shm",
+    ".so", ".dll", ".exe", ".o", ".pyc"
+}
+
+MAX_SIZE = 5 * 1024 * 1024  # 5 MB
+
 
 def process_files(root_dir, output_file):
-    """
-    Recursively processes all files in the given directory and its subdirectories,
-    writing each file's name and content to the output file.
-    """
-    try:
-        with open(output_file, 'w', encoding='utf-8') as outfile:
-            for root, dirs, files in os.walk(root_dir):
-                for filename in files:
-                    filepath = os.path.join(root, filename)
-                    
-                    # Skip the output file itself to avoid recursion
-                    if filepath == os.path.abspath(output_file):
+    output_abs = os.path.abspath(output_file)
+
+    with open(output_file, "w", encoding="utf-8") as outfile:
+        for root, dirs, files in os.walk(root_dir):
+
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+
+            files.sort()
+
+            for filename in files:
+                filepath = os.path.join(root, filename)
+
+                if os.path.abspath(filepath) == output_abs:
+                    continue
+
+                ext = os.path.splitext(filename)[1].lower()
+
+                if ext in SKIP_EXTENSIONS:
+                    continue
+
+                try:
+                    if os.path.getsize(filepath) > MAX_SIZE:
+                        outfile.write(
+                            f"\n{'='*120}\n"
+                            f"FILE: {os.path.relpath(filepath, root_dir)}\n"
+                            f"{'='*120}\n"
+                            "[SKIPPED: FILE TOO LARGE]\n"
+                        )
                         continue
-                    
-                    # Write the file name header
-                    outfile.write(f"=== FILE: {filepath} ===\n")
-                    
-                    try:
-                        # Try to read the file as text
-                        with open(filepath, 'r', encoding='utf-8') as infile:
-                            content = infile.read()
-                            outfile.write(content)
-                    except UnicodeDecodeError:
-                        # If it's a binary file, note that instead
-                        outfile.write("[BINARY FILE - CONTENT NOT SHOWN]\n")
-                    except Exception as e:
-                        # Handle other potential errors
-                        outfile.write(f"[ERROR READING FILE: {str(e)}]\n")
-                    
-                    # Add separation between files
-                    outfile.write("\n" + "="*80 + "\n\n")
-        
-        print(f"Successfully processed all files. Output saved to: {output_file}")
-        
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
+                except OSError:
+                    continue
+
+                outfile.write(
+                    f"\n{'='*120}\n"
+                    f"FILE: {os.path.relpath(filepath, root_dir)}\n"
+                    f"{'='*120}\n\n"
+                )
+
+                try:
+                    with open(filepath, "r", encoding="utf-8") as infile:
+                        outfile.write(infile.read())
+                except UnicodeDecodeError:
+                    outfile.write("[BINARY FILE]\n")
+                except Exception as e:
+                    outfile.write(f"[ERROR READING FILE: {e}]\n")
+
+                outfile.write("\n\n")
+
 
 if __name__ == "__main__":
-    # Get the directory to process (default to current directory)
-    target_dir = input("Enter the directory to process (press Enter for current directory): ").strip()
-    if not target_dir:
-        target_dir = "."
-    
-    # Get the output file name
-    output_filename = input("Enter the output filename (default: all_files.txt): ").strip()
-    if not output_filename:
-        output_filename = "all_files.txt"
-    
-    # Process the files
-    process_files(target_dir, output_filename)
+    target_dir = input("Directory (Enter = current): ").strip() or "."
+    output = input("Output (Enter = all_files.txt): ").strip() or "all_files.txt"
+
+    process_files(target_dir, output)
+
+    print(f"\nDone -> {output}")
