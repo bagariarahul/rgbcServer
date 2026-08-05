@@ -653,6 +653,30 @@ def _build_router():
                 "existingPath": existing["relative_path"],
             }
 
+        # ── Dedup against IN-PROGRESS sessions (Sprint 3.8) ──────────
+        # The check above only catches files that already FINISHED (they're
+        # in local_files). A file mid-upload isn't there yet — so pressing
+        # "Backup All" twice spawned two sessions for the same content, both
+        # finalizing, the second collision-renamed to file_<ts>.ext = the
+        # duplicate files + 2x data. Reuse the live session instead of
+        # starting a second: the chunk PUT path is idempotent (re-uploading
+        # a chunk just re-writes+re-verifies), so the client resumes safely.
+        in_progress = _db.find_upload_by_hash(total_sha256, auth["id"])
+        if in_progress:
+            already = _db.get_missing_chunks(
+                in_progress["received_mask"], in_progress["total_chunks"]
+            )
+            logger.info(
+                f"⚡ Reusing in-progress upload for sha256={total_sha256[:16]}... "
+                f"upload_id={in_progress['upload_id']} "
+                f"({in_progress['total_chunks'] - len(already)}/{in_progress['total_chunks']} chunks done)"
+            )
+            return {
+                "uploadId": in_progress["upload_id"],
+                "expiresAt": in_progress["expires_at"],
+                "skip": False,
+                "resumed": True,
+            }
         # ── Resolve safe relative path ───────────────────────────────
         safe_rel = _sanitize_relpath(relative_path_hint)
 

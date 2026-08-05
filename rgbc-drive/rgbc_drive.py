@@ -229,7 +229,7 @@ def register_with_gateway(api: APIClient, device_id: str, db: SyncDatabase, tunn
         return False
 
 
-def heartbeat_loop(api, device_id, db, stop_event, tunnel_getter=None):
+def heartbeat_loop(api, device_id, db, stop_event, tunnel_getter=None, wake_event=None):
     while not stop_event.is_set():
         try:
             stats = db.get_stats()
@@ -257,6 +257,9 @@ def heartbeat_loop(api, device_id, db, stop_event, tunnel_getter=None):
         for _ in range(HEARTBEAT_INTERVAL):
             if stop_event.is_set():
                 return
+            if wake_event is not None and wake_event.is_set():
+                wake_event.clear()
+                break  # tunnel URL changed → send the next heartbeat NOW
             time.sleep(1)
 
 
@@ -352,9 +355,19 @@ def main():
         )
         logger.info(f"🌐 Master API listening on http://0.0.0.0:{MASTER_PORT}")
 
-    # ── Cloudflare Tunnel ────────────────────────────────────────
+# ── Cloudflare Tunnel ────────────────────────────────────────
     tunnel = None
     tunnel_getter = lambda: None
+    hb_wake = threading.Event()  # set on tunnel URL change → immediate heartbeat
+
+    if NODE_ROLE == "MASTER" and TUNNEL_ENABLED:
+        tunnel = TunnelManager(
+            local_port=MASTER_PORT,
+            token=CLOUDFLARED_TOKEN,
+            tunnel_url_override=TUNNEL_URL,
+        )
+        tunnel.on_url_changed = hb_wake.set  # wire BEFORE start() — no race
+        tunnel.start()
 
     if NODE_ROLE == "MASTER" and TUNNEL_ENABLED:
         tunnel = TunnelManager(
@@ -385,7 +398,7 @@ def main():
     heartbeat_stop = threading.Event()
     threading.Thread(
         target=heartbeat_loop, args=(api, DEVICE_ID, db, heartbeat_stop),
-        kwargs={"tunnel_getter": tunnel_getter}, daemon=True, name="Heartbeat",
+        kwargs={"tunnel_getter": tunnel_getter, "wake_event": hb_wake}, daemon=True, name="Heartbeat",
     ).start()
     logger.info(f"💓 Heartbeat started (every {HEARTBEAT_INTERVAL}s)")
 

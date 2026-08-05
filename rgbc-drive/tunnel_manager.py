@@ -23,9 +23,10 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 from paths import get_cloudflared_dir
 logger = logging.getLogger("RGBCDrive.Tunnel")
+
 
 _URL_PATTERNS = [
     re.compile(r'https://[a-zA-Z0-9._-]+\.trycloudflare\.com'),
@@ -51,6 +52,20 @@ class TunnelManager:
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._lock = threading.Lock()
+
+        # Sprint 3.8: fired from the monitor thread whenever the tunnel URL
+        # changes — on discovery of a new URL AND on loss when cloudflared
+        # dies. rgbc_drive.py wires this to wake the heartbeat loop.
+        self.on_url_changed: Optional[Callable[[], None]] = None
+
+    def _fire_url_changed(self) -> None:
+        cb = self.on_url_changed
+        if cb:
+            try:
+                cb()
+            except Exception:
+                logger.exception("on_url_changed callback failed")
 
     def get_url(self, timeout: float = 60) -> Optional[str]:
         if self.tunnel_url_override:
@@ -126,6 +141,9 @@ class TunnelManager:
                 )
                 self._url = None
                 self._url_event.clear()
+                # Tell the gateway "tunnel down" now (heartbeat sends null)
+                # instead of waiting up to HEARTBEAT_INTERVAL.
+                self._fire_url_changed()
 
                 for _ in range(backoff):
                     if self._stop_event.is_set():
@@ -177,6 +195,7 @@ class TunnelManager:
                         self._url = url
                     self._url_event.set()
                     logger.info(f"🔗 Tunnel URL discovered: {url}")
+                    self._fire_url_changed()
 
         if self._process:
             self._process.wait()

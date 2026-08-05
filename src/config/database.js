@@ -2,20 +2,18 @@ const { Sequelize } = require('sequelize');
 const logger = require('./logger');
 
 // Initialize Sequelize instance
-const sequelize = new Sequelize(
-    process.env.DB_NAME || 'cloudbackup',
-    process.env.DB_USER || 'cloudbackup_user',
-    process.env.DB_PASSWORD || 'secure_demo_password',
-    {
-        // FIX: Default to 'db' for Docker, fallback to localhost for local
-        host: process.env.DB_HOST || 'db',
-        port: process.env.DB_PORT || 5432,
+const sequelize = process.env.DATABASE_URL
+    ? new Sequelize(process.env.DATABASE_URL, {
         dialect: 'postgres',
-        logging: (msg) => {
-            if (process.env.NODE_ENV === 'development') {
-                logger.debug(msg);
+        dialectOptions: {
+            ssl: {
+                require: true,
+                rejectUnauthorized: false
             }
         },
+        logging: process.env.NODE_ENV === 'development'
+            ? (msg) => logger.debug(msg)
+            : false,
         pool: {
             max: parseInt(process.env.DB_POOL_MAX) || 10,
             min: parseInt(process.env.DB_POOL_MIN) || 0,
@@ -27,9 +25,31 @@ const sequelize = new Sequelize(
             underscored: true,
             freezeTableName: true
         }
-    }
-);
-
+    })
+    : new Sequelize(
+        process.env.DB_NAME || 'cloudbackup',
+        process.env.DB_USER || 'cloudbackup_user',
+        process.env.DB_PASSWORD || 'secure_demo_password',
+        {
+            host: process.env.DB_HOST || 'db',
+            port: process.env.DB_PORT || 5432,
+            dialect: 'postgres',
+            logging: process.env.NODE_ENV === 'development'
+                ? (msg) => logger.debug(msg)
+                : false,
+            pool: {
+                max: parseInt(process.env.DB_POOL_MAX) || 10,
+                min: parseInt(process.env.DB_POOL_MIN) || 0,
+                acquire: parseInt(process.env.DB_POOL_ACQUIRE) || 60000,
+                idle: parseInt(process.env.DB_POOL_IDLE) || 10000
+            },
+            define: {
+                timestamps: true,
+                underscored: true,
+                freezeTableName: true
+            }
+        }
+    );
 // Import all models - ORDER MATTERS for table creation!
 // 1. Base models (no dependencies)
 const User = require('../models/User')(sequelize);
