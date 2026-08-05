@@ -17,21 +17,42 @@ const logger = require('../config/logger');
  * Key file expected: src/keys/public.pem
  */
 
+
+
+//For Local
+// const KEYS_DIR = path.resolve(__dirname, '..', 'keys');
+
+// let PUBLIC_KEY = null;
+// try {
+//     PUBLIC_KEY = fs.readFileSync(path.join(KEYS_DIR, 'public.pem'), 'utf8');
+//     logger.info('✅ RS256 public key loaded from src/keys/public.pem');
+// } catch (e) {
+//     logger.error(
+//         '❌ RS256 public key not found at src/keys/public.pem\n' +
+//         '   Generate it with:\n' +
+//         '     cd src/keys && openssl genrsa -out private.pem 2048\n' +
+//         '     openssl rsa -in private.pem -pubout -out public.pem\n'
+//     );
+// }
+
 const KEYS_DIR = path.resolve(__dirname, '..', 'keys');
 
 let PUBLIC_KEY = null;
 try {
-    PUBLIC_KEY = fs.readFileSync(path.join(KEYS_DIR, 'public.pem'), 'utf8');
-    logger.info('✅ RS256 public key loaded from src/keys/public.pem');
+    if (process.env.JWT_PUBLIC_KEY_B64) {
+        PUBLIC_KEY = Buffer.from(process.env.JWT_PUBLIC_KEY_B64, 'base64').toString('utf8');
+        logger.info('✅ RS256 public key loaded from JWT_PUBLIC_KEY_B64 env var');
+    } else {
+        PUBLIC_KEY = fs.readFileSync(path.join(KEYS_DIR, 'public.pem'), 'utf8');
+        logger.info('✅ RS256 public key loaded from src/keys/public.pem');
+    }
 } catch (e) {
     logger.error(
-        '❌ RS256 public key not found at src/keys/public.pem\n' +
-        '   Generate it with:\n' +
-        '     cd src/keys && openssl genrsa -out private.pem 2048\n' +
-        '     openssl rsa -in private.pem -pubout -out public.pem\n'
+        '❌ RS256 public key not available.\n' +
+        '   Set JWT_PUBLIC_KEY_B64 (base64 of public.pem) in the environment,\n' +
+        '   or place src/keys/public.pem for local dev.'
     );
 }
-
 const verifyToken = (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;

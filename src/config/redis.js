@@ -4,34 +4,70 @@ const logger = require('./logger');
 let redisClient = null;
 
 /**
- * Initialize Redis connection
+ * Initialize Redis connection.
+ *
+ * Two ways to configure, checked in order:
+ *   1. REDIS_URL  — a full connection string, e.g. Upstash's
+ *      rediss://default:<token>@host:6379  (rediss = TLS on).
+ *      This is the production path (Render env var).
+ *   2. REDIS_HOST / REDIS_PORT / REDIS_PASSWORD — discrete vars,
+ *      the local-dev fallback (plain redis://, no TLS).
+ *
+ * Gated on REDIS_ENABLED=true so the gateway can run without Redis
+ * (sessions/caching simply disabled) — nothing here is load-bearing
+ * for pure-P2P alpha.
  */
 const connectRedis = async () => {
-    try {
-        const redisConfig = {
-            host: process.env.REDIS_HOST || 'localhost',
-            port: parseInt(process.env.REDIS_PORT) || 6379,
-            password: process.env.REDIS_PASSWORD,
-            db: parseInt(process.env.REDIS_DB) || 0,
-            retryDelayOnFailover: 100,
-            retryDelayOnCluster: 100,
-            maxRetriesPerRequest: 3,
-            lazyConnect: true
-        };
 
-        // Create Redis client
-        redisClient = redis.createClient({
-            url: `redis://${redisConfig.password ? `:${redisConfig.password}@` : ''}${redisConfig.host}:${redisConfig.port}/${redisConfig.db}`,
-            socket: {
-                reconnectStrategy: (retries) => {
-                    if (retries > 5) {
-                        logger.error('Redis reconnection attempts exceeded, giving up');
-                        return new Error('Redis connection failed after 5 retries');
+    if (process.env.REDIS_ENABLED !== 'true') {
+        logger.info('Redis disabled (REDIS_ENABLED != true) — skipping connection');
+        return null;
+    }
+
+    try {
+        // ── Build the client from REDIS_URL if given, else discrete vars ──
+        let clientOptions;
+
+        if (process.env.REDIS_URL) {
+            // Upstash: rediss:// already implies TLS. The redis client reads
+            // the scheme and enables TLS automatically for rediss://, but we
+            // set socket.tls explicitly so it's unambiguous.
+            const useTls = process.env.REDIS_URL.startsWith('rediss://');
+            clientOptions = {
+                url: process.env.REDIS_URL,
+                socket: {
+                    tls: useTls,
+                    reconnectStrategy: (retries) => {
+                        if (retries > 5) {
+                            logger.error('Redis reconnection attempts exceeded, giving up');
+                            return new Error('Redis connection failed after 5 retries');
+                        }
+                        return Math.min(retries * 50, 500);
                     }
-                    return Math.min(retries * 50, 500);
                 }
-            }
-        });
+            };
+            logger.info('Redis: connecting via REDIS_URL' + (useTls ? ' (TLS)' : ''));
+        } else {
+            const host = process.env.REDIS_HOST || 'localhost';
+            const port = parseInt(process.env.REDIS_PORT) || 6379;
+            const password = process.env.REDIS_PASSWORD;
+            const db = parseInt(process.env.REDIS_DB) || 0;
+            clientOptions = {
+                url: `redis://${password ? `:${password}@` : ''}${host}:${port}/${db}`,
+                socket: {
+                    reconnectStrategy: (retries) => {
+                        if (retries > 5) {
+                            logger.error('Redis reconnection attempts exceeded, giving up');
+                            return new Error('Redis connection failed after 5 retries');
+                        }
+                        return Math.min(retries * 50, 500);
+                    }
+                }
+            };
+            logger.info(`Redis: connecting via discrete vars (${host}:${port})`);
+        }
+
+        redisClient = redis.createClient(clientOptions);
 
         // Event handlers
         redisClient.on('connect', () => {
@@ -56,23 +92,19 @@ const connectRedis = async () => {
 
         // Connect to Redis
         await redisClient.connect();
-        
+
         // Test connection
         await redisClient.ping();
-        
-        logger.info('Redis connected successfully', {
-            host: redisConfig.host,
-            port: redisConfig.port,
-            db: redisConfig.db
-        });
+
+        logger.info('Redis connected successfully');
 
     } catch (error) {
         logger.error('Redis connection failed:', error);
-        
-        // Don't crash the server, but log the error
-        // The app can still function without Redis, albeit with reduced performance
+
+        // Don't crash the server, but log the error.
+        // The app can still function without Redis, albeit with reduced performance.
         logger.warn('Continuing without Redis - sessions and caching will be disabled');
-        
+
         return null;
     }
 };
@@ -94,7 +126,7 @@ class RedisService {
                 logger.warn('Redis not available, skipping get operation');
                 return null;
             }
-            
+
             const value = await redisClient.get(key);
             return value ? JSON.parse(value) : null;
         } catch (error) {
@@ -109,15 +141,15 @@ class RedisService {
                 logger.warn('Redis not available, skipping set operation');
                 return false;
             }
-            
+
             const stringValue = JSON.stringify(value);
-            
+
             if (expireSeconds) {
                 await redisClient.setEx(key, expireSeconds, stringValue);
             } else {
                 await redisClient.set(key, stringValue);
             }
-            
+
             return true;
         } catch (error) {
             logger.error('Redis SET error:', { key, error: error.message });
@@ -131,7 +163,7 @@ class RedisService {
                 logger.warn('Redis not available, skipping del operation');
                 return false;
             }
-            
+
             const result = await redisClient.del(key);
             return result > 0;
         } catch (error) {
@@ -145,7 +177,7 @@ class RedisService {
             if (!redisClient || !redisClient.isReady) {
                 return false;
             }
-            
+
             const result = await redisClient.exists(key);
             return result > 0;
         } catch (error) {
@@ -160,14 +192,14 @@ class RedisService {
                 logger.warn('Redis not available, skipping increment operation');
                 return 0;
             }
-            
+
             const result = await redisClient.incrBy(key, amount);
-            
+
             if (expireSeconds && result === amount) {
                 // This is a new key, set expiration
                 await redisClient.expire(key, expireSeconds);
             }
-            
+
             return result;
         } catch (error) {
             logger.error('Redis INCREMENT error:', { key, error: error.message });
@@ -181,15 +213,15 @@ class RedisService {
                 logger.warn('Redis not available, skipping pattern invalidation');
                 return 0;
             }
-            
+
             const keys = await redisClient.keys(pattern);
-            
+
             if (keys.length > 0) {
                 const result = await redisClient.del(keys);
                 logger.info('Redis pattern invalidated', { pattern, keysDeleted: result });
                 return result;
             }
-            
+
             return 0;
         } catch (error) {
             logger.error('Redis pattern invalidation error:', { pattern, error: error.message });
@@ -205,13 +237,13 @@ class RedisService {
                     error: 'Redis client not ready'
                 };
             }
-            
+
             const startTime = Date.now();
             await redisClient.ping();
             const responseTime = Date.now() - startTime;
-            
+
             const info = await redisClient.info('memory');
-            
+
             return {
                 status: 'connected',
                 responseTime: `${responseTime}ms`,
@@ -228,14 +260,14 @@ class RedisService {
     static parseRedisInfo(info) {
         const lines = info.split('\r\n');
         const result = {};
-        
+
         for (const line of lines) {
             if (line.includes(':')) {
                 const [key, value] = line.split(':');
                 result[key] = value;
             }
         }
-        
+
         return {
             used_memory_human: result.used_memory_human,
             used_memory_peak_human: result.used_memory_peak_human,
@@ -248,7 +280,7 @@ class RedisService {
             if (!redisClient || !redisClient.isReady) {
                 return false;
             }
-            
+
             await redisClient.flushAll();
             return true;
         } catch (error) {

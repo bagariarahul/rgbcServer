@@ -28,19 +28,42 @@ const { User, Device, SyncSession } = require('../config/database');
 // and can verify but NEVER forge tokens.
 // ═══════════════════════════════════════════════════════════════════════
 
+
+// For local 
+// const KEYS_DIR = path.resolve(__dirname, '..', 'keys');
+
+// let PRIVATE_KEY = null;
+// try {
+//     PRIVATE_KEY = fs.readFileSync(path.join(KEYS_DIR, 'private.pem'), 'utf8');
+//     logger.info('✅ RS256 private key loaded from src/keys/private.pem');
+// } catch (e) {
+//     logger.error(
+//         '❌ RS256 private key not found at src/keys/private.pem\n' +
+//         '   Generate it with:\n' +
+//         '     cd src/keys && openssl genrsa -out private.pem 2048\n' +
+//         '     openssl rsa -in private.pem -pubout -out public.pem\n' +
+//         '   Then restart the server.'
+//     );
+// }
+
 const KEYS_DIR = path.resolve(__dirname, '..', 'keys');
 
+// Prefer the base64 env var (Render/production — keys are NOT in Git),
+// fall back to the file on disk (local dev). Same keypair either way.
 let PRIVATE_KEY = null;
 try {
-    PRIVATE_KEY = fs.readFileSync(path.join(KEYS_DIR, 'private.pem'), 'utf8');
-    logger.info('✅ RS256 private key loaded from src/keys/private.pem');
+    if (process.env.JWT_PRIVATE_KEY_B64) {
+        PRIVATE_KEY = Buffer.from(process.env.JWT_PRIVATE_KEY_B64, 'base64').toString('utf8');
+        logger.info('✅ RS256 private key loaded from JWT_PRIVATE_KEY_B64 env var');
+    } else {
+        PRIVATE_KEY = fs.readFileSync(path.join(KEYS_DIR, 'private.pem'), 'utf8');
+        logger.info('✅ RS256 private key loaded from src/keys/private.pem');
+    }
 } catch (e) {
     logger.error(
-        '❌ RS256 private key not found at src/keys/private.pem\n' +
-        '   Generate it with:\n' +
-        '     cd src/keys && openssl genrsa -out private.pem 2048\n' +
-        '     openssl rsa -in private.pem -pubout -out public.pem\n' +
-        '   Then restart the server.'
+        '❌ RS256 private key not available.\n' +
+        '   Set JWT_PRIVATE_KEY_B64 (base64 of private.pem) in the environment,\n' +
+        '   or place src/keys/private.pem for local dev.'
     );
 }
 
