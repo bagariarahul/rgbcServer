@@ -15,6 +15,7 @@ services:
   # 2. The Backend API
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -52,6 +53,7 @@ services:
   # 3. PostgreSQL Database (Isolated)
   db:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
@@ -64,6 +66,7 @@ services:
   # 4. Redis Cache
   redis:
     image: redis:alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
 
