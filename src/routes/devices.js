@@ -102,6 +102,17 @@ router.post('/register', registerValidation, async (req, res) => {
         });
 
     } catch (error) {
+        // A stale token can carry a userId that no longer exists in `users`
+        // (e.g. after a DB reset). The FK violation is an auth problem, not a
+        // server fault — tell the client to re-authenticate instead of 500ing.
+        if (error.name === 'SequelizeForeignKeyConstraintError') {
+            logger.warn(`Device register: orphaned userId ${req.user?.id} — token references a non-existent user`);
+            return res.status(401).json({
+                error: 'Stale authentication',
+                message: 'Your session references an account that no longer exists. Please sign in again.',
+                code: 'USER_NOT_FOUND'
+            });
+        }
         logger.error('Device registration error:', error);
         res.status(500).json({ error: 'Device registration failed' });
     }
