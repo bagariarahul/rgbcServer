@@ -323,6 +323,7 @@ router.get('/download/:fileId', async (req, res) => {
  * GET /api/files/list — only the caller's files.
  */
 router.get('/list', listValidation, async (req, res) => {
+    logger.info(`files/list caller: user=${req.user?.id} session=${req.user?.sessionId} ua=${req.get('user-agent')}`);
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
