@@ -54,7 +54,8 @@ class CloudBackupServer {
             await this.initializeAdvancedFeatures();
 
         } catch (error) {
-            logger.error('Failed to start server:', error);
+            console.error('RAW STARTUP ERROR >>>', error);
+            logger.error(`Failed to start server: ${error?.message}`);
             process.exit(1);
         }
     }
@@ -117,7 +118,8 @@ class CloudBackupServer {
                     await this.initializeAdvancedFeatures();
 
                 } catch (error) {
-                    logger.error('Failed to start server:', error);
+                    console.error('RAW STARTUP ERROR >>>', error);
+                    logger.error(`Failed to start server: ${error?.message}`);
                     process.exit(1);
                 }
             }
