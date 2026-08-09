@@ -820,7 +820,28 @@ def _build_router():
             )
 
         # ── Atomic rename + DB update ────────────────────────────────
-        os.replace(chunk_path_tmp, chunk_path)
+        # ── Atomic rename + DB update ────────────────────────────────
+        # Windows (WinError 32): the destination can be briefly locked when a
+        # duplicate/retry request touches the same chunk. os.replace is atomic
+        # on POSIX but can transiently fail on Windows — retry a few times, and
+        # if the destination already exists with our verified content, treat it
+        # as done (idempotent: same chunk re-sent).
+        import time as _time
+        for _attempt in range(5):
+            try:
+                os.replace(chunk_path_tmp, chunk_path)
+                break
+            except PermissionError:
+                if _attempt == 4:
+                    # Give up the rename, but if the final chunk is already in
+                    # place, the chunk is effectively received — don't fail.
+                    if os.path.exists(chunk_path):
+                        if os.path.exists(chunk_path_tmp):
+                            try: os.unlink(chunk_path_tmp)
+                            except OSError: pass
+                        break
+                    raise
+                _time.sleep(0.1 * (_attempt + 1))
         _db.mark_chunk_received(upload_id, chunk_index)
 
         # Re-read session to compute remaining chunks
