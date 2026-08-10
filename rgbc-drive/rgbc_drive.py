@@ -20,6 +20,14 @@ Lifecycle:
   10. System tray icon (blocks main thread)
 """
 
+import traceback, logging, requests
+_orig = requests.Session.request
+def _traced(self, method, url, *a, **kw):
+    if "files/list" in str(url):
+        logging.getLogger().warning("FILES/LIST CALLER:\n%s", "".join(traceback.format_stack()))
+    return _orig(self, method, url, *a, **kw)
+requests.Session.request = _traced
+
 import os
 import sys
 import logging
@@ -369,13 +377,6 @@ def main():
         tunnel.on_url_changed = hb_wake.set  # wire BEFORE start() — no race
         tunnel.start()
 
-    if NODE_ROLE == "MASTER" and TUNNEL_ENABLED:
-        tunnel = TunnelManager(
-            local_port=MASTER_PORT,
-            token=CLOUDFLARED_TOKEN,
-            tunnel_url_override=TUNNEL_URL,
-        )
-        tunnel.start()
 
         if not TUNNEL_URL:
             logger.info("⏳ Waiting for Cloudflare Tunnel URL (up to 30s)...")
@@ -500,7 +501,7 @@ def main():
     watcher_ref["obj"] = watcher
 
     poller = SyncPoller(sync_root=SYNC_ROOT, db=db, api_client=api, poll_interval=POLL_INTERVAL, status_callback=lambda t: None)
-    poller.start()
+    # poller.start()
     poller_ref["obj"] = poller
 
     def periodic_scan_loop():

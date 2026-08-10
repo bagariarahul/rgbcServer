@@ -12,6 +12,8 @@ This completes the bidirectional loop:
   Remote changes → Poller  → Download (pull)
 """
 
+print("LOADED POLLER FROM:", __file__, flush=True)
+
 import os
 import hashlib
 import logging
@@ -57,6 +59,11 @@ class SyncPoller:
         return self._is_syncing
 
     def start(self):
+        # RGBC alpha: gateway holds no files (pure P2P, master-as-truth), so
+        # pull-sync against it is dead weight and a re-entry path into the old
+        #sync loop. Disabled for alpha — see backlog.
+        logger.info("SyncPoller.start() DISABLED for alpha")
+        return
         """Start the poller background thread."""
         if self._thread and self._thread.is_alive():
             return
@@ -74,6 +81,8 @@ class SyncPoller:
 
     def force_sync(self):
         """Trigger an immediate sync cycle (non-blocking)."""
+        logger.info("SyncPoller.force_sync() DISABLED for alpha")
+        return
         threading.Thread(target=self._sync_cycle, daemon=True, name="ForceSync").start()
 
     def _run_loop(self):

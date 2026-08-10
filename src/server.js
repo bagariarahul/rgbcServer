@@ -142,7 +142,7 @@ class CloudBackupServer {
 
     setupErrorHandling() {
         this.app.use((err, req, res, next) => {
-            logger.error('Global error:', err.message);
+            logger.error(`Global error: ${err.message}`);
             res.status(500).json({ error: 'Internal Server Error' });
         });
     }
